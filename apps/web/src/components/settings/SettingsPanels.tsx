@@ -62,6 +62,8 @@ import {
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  getDesktopUpdateReleaseUrl,
+  isLocalDesktopVersion,
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -326,6 +328,23 @@ function AboutVersionSection() {
 
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
+    if (action === "release") {
+      const url = getDesktopUpdateReleaseUrl(updateState?.availableVersion ?? null);
+      try {
+        if (url && !(await bridge.openExternal(url)))
+          throw new Error("Could not open Local release.");
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not open release",
+            description: error instanceof Error ? error.message : "Could not open Local release.",
+          }),
+        );
+      }
+      return;
+    }
+
     if (action === "download") {
       void bridge.downloadUpdate().catch((error: unknown) => {
         toastManager.add(
@@ -412,7 +431,11 @@ function AboutVersionSection() {
       ? !canCheckForUpdate(updateState)
       : isDesktopUpdateButtonDisabled(updateState);
 
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
+  const actionLabel: Record<string, string> = {
+    download: "Download",
+    install: "Install",
+    release: "Open release",
+  };
   const statusLabel: Record<string, string> = {
     checking: "Checking…",
     downloading: "Downloading…",
@@ -421,9 +444,11 @@ function AboutVersionSection() {
   const buttonLabel =
     actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
   const description =
-    action === "download" || action === "install"
-      ? "Update available."
-      : "Current version of the application.";
+    action === "release"
+      ? "Download the Local release and replace the app after closing it."
+      : action === "download" || action === "install"
+        ? "Update available."
+        : "Current version of the application.";
 
   return (
     <>
@@ -449,7 +474,7 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
-      {hasDesktopBridge ? (
+      {hasDesktopBridge && !isLocalDesktopVersion(updateState?.currentVersion ?? "") ? (
         <SettingsRow
           {...searchableSetting("update-track")}
           description="Use stable releases or nightly builds. Switch back anytime."

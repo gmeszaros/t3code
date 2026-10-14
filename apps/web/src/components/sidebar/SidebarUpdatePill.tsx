@@ -28,6 +28,7 @@ import {
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  getDesktopUpdateReleaseUrl,
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
@@ -110,7 +111,7 @@ function resolveSidebarUpdatePresentation({
           ? "everything"
           : action === "install"
             ? "downloaded"
-            : action === "download"
+            : action === "download" || action === "release"
               ? "available"
               : "idle";
 
@@ -273,9 +274,11 @@ function SidebarUpdateControl() {
   const isDownloading = state?.status === "downloading";
   // Remote servers follow this app to the version it is about to install.
   const localUpdateVersion =
-    state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
+    state && (action === "download" || action === "install")
+      ? getDesktopUpdateDownloadedVersion(state)
+      : null;
   const everything = useUpdateEverything(localUpdateVersion);
-  const runsEverything = everything.hasUpdates && !isDownloading;
+  const runsEverything = everything.hasUpdates && !isDownloading && action !== "release";
   // Providers leave the list once queued, so the run keeps its own state.
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
@@ -303,7 +306,9 @@ function SidebarUpdateControl() {
             : "Update available"
           : showCheckIcon
             ? "Checking for updates…"
-            : "Check for updates";
+            : state?.status === "disabled"
+              ? getDesktopUpdateButtonTooltip(state)
+              : "Check for updates";
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -339,6 +344,22 @@ function SidebarUpdateControl() {
 
     if (!bridge || !state) return;
     setIsActionPending(true);
+
+    if (action === "release") {
+      const url = getDesktopUpdateReleaseUrl(state.availableVersion);
+      try {
+        if (url && !(await bridge.openExternal(url)))
+          throw new Error("Could not open Local release.");
+      } catch (error) {
+        toastUpdateError(
+          "Could not open release",
+          error instanceof Error ? error.message : "Could not open Local release.",
+        );
+      } finally {
+        setIsActionPending(false);
+      }
+      return;
+    }
 
     if (action === "download") {
       void downloadLocalUpdate(bridge, { notifyDownloaded: true }).finally(() =>
@@ -413,7 +434,7 @@ function SidebarUpdateControl() {
                 downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
             }
           : {}),
-        ...(bridge && action !== "none"
+        ...(bridge && (action === "download" || action === "install")
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
       });

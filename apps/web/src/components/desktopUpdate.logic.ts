@@ -1,9 +1,8 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
-export type DesktopUpdateButtonAction = "download" | "install" | "none";
+export type DesktopUpdateButtonAction = "download" | "install" | "release" | "none";
 
 const DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
-const DESKTOP_RELEASE_TAG_URL = `${DESKTOP_RELEASE_HISTORY_URL}/tag`;
 
 /**
  * The main process fills `downloadedVersion` from the updater's `update-downloaded`
@@ -18,16 +17,26 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
 export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  return `${DESKTOP_RELEASE_TAG_URL}/v${encodeURIComponent(normalizedVersion)}`;
+  const history = getDesktopUpdateReleaseHistoryUrl(normalizedVersion);
+  return `${history}/tag/v${encodeURIComponent(normalizedVersion)}`;
 }
 
-export function getDesktopUpdateReleaseHistoryUrl(): string {
-  return DESKTOP_RELEASE_HISTORY_URL;
+export function isLocalDesktopVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+-local\.\d+\.\d+$/.test(version);
+}
+
+export function getDesktopUpdateReleaseHistoryUrl(version = ""): string {
+  return isLocalDesktopVersion(version)
+    ? "https://github.com/gmeszaros/t3code-local/releases"
+    : DESKTOP_RELEASE_HISTORY_URL;
 }
 
 export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
+  if (isLocalDesktopVersion(state.currentVersion)) {
+    return state.status === "available" && state.availableVersion ? "release" : "none";
+  }
   if (
     state.downloadedVersion &&
     (state.status === "downloaded" ||
@@ -71,6 +80,9 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  if (isLocalDesktopVersion(state.currentVersion) && state.status === "available") {
+    return `Local ${state.availableVersion} available. Click to open the release and download it.`;
+  }
   if (
     state.notAppliedVersion !== undefined &&
     (state.status === "available" || state.status === "downloaded") &&
@@ -78,6 +90,8 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
   ) {
     return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
   }
+  if (state.status === "disabled")
+    return state.message ?? "Automatic updates are unavailable for this build.";
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }

@@ -21,6 +21,23 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
+  it.effect("keeps packaged Local updates on the manual release path", () => {
+    const harness = makeHarness({ env: { T3_LOCAL_BUILD: "1" } });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.equal(state.enabled, true);
+        assert.equal(state.channel, "latest");
+        assert.deepEqual(harness.feedUrls(), []);
+        assert.equal(harness.listenerCount(), 0);
+        assert.equal((yield* updates.install).accepted, false);
+        assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
   it("preserves complete causes for update poller and event failures", () => {
     const cause = Cause.combine(
       Cause.fail(new Error("updater failed")),
