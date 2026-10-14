@@ -29,10 +29,19 @@ jobs:
           git sparse-checkout set --no-cone '/.github/scripts/mirror-upstream.sh'
           git checkout --detach FETCH_HEAD
 
-      - name: Mirror original upstream main
+      - name: Require workflow-capable sync credential
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'Configure UPSTREAM_SYNC_TOKEN with Contents and Workflows write access for this repository.' >&2
+            exit 1
+          fi
+
+      - name: Mirror upstream and rebase Local main
         id: mirror
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           DESTINATION_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
         run: |
           bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git "$DESTINATION_REPOSITORY"
@@ -46,7 +55,7 @@ jobs:
             echo '### Upstream mirror'
             echo "Revision: ${UPSTREAM_SHA}"
             echo "Changed: ${CHANGED}"
-            echo 'upstream/main retains the original upstream commits and complete trees, including .github. The custom main branch is unchanged.'
-            echo 'Integrate upstream with a merge commit; never squash or rebase that merge in the pull request.'
+            echo 'upstream/main tracks exact upstream commits. Local main contains rebased Local commits above that revision.'
+            echo 'Both branches update atomically with explicit leases. Conflicts leave both branches unchanged. Previous Local tips are retained under local-rebase tags.'
             echo 'This workflow does not start a macOS build or publish a release.'
           } >> "$GITHUB_STEP_SUMMARY"

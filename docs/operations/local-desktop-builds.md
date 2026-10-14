@@ -2,9 +2,9 @@
 
 ## Repository decision (2026-10-14)
 
-Keep `gmeszaros/t3code-local` as a standalone public shadow repository. Its `upstream/main` branch mirrors the original `pingdotgg/t3code` commits and complete trees. The custom `main` preserves Local changes and integrates upstream through merge commits. GitHub fork conversion is unnecessary for this history model.
+Keep `gmeszaros/t3code-local` as a standalone public shadow repository. Its `upstream/main` branch tracks the original `pingdotgg/t3code` commits and complete trees. Custom `main` contains a linear series of Local commits above that revision. Upstream updates rebase this series automatically without an integration PR.
 
-Existing published commits, tags and releases remain intact. The initial ancestry repair merges the already-integrated upstream revision without changing source files. The old `upstream-snapshot` branch remains a historical reference and is no longer updated.
+The initial migration replaces the former snapshot and merge history with equivalent Local commits above upstream. Preserve the old published tip under `archive/main-before-auto-rebase-20261014`. Existing tags, releases and the historical `upstream-snapshot` branch remain intact.
 
 ## Build, release and synchronization workflow
 
@@ -14,13 +14,17 @@ verifies the signature and shipped backend, and writes the checksum manifest.
 Package versions and a temporary public `.env` are restored on success or failure.
 Use `--output-dir <directory>` to keep artifacts outside the checkout.
 
-### Upstream integration
+### Local changes and upstream updates
 
-Start in a clean feature worktree based on the current Local `main`. Fetch the original upstream history and merge it with `git merge --no-ff upstream/main`. Review workflow conflicts explicitly so Local build settings survive. Inspect the diff, run scoped checks, and prepare a draft PR against Local `main`.
+Create feature worktrees from the latest hosted Local `main` and open feature PRs against `main`. These PRs show only their own changes. Merge Local PRs using squash or rebase merge to keep the patch series linear. Merge commits are rejected by the upstream updater.
 
-After publication approval, merge the PR with `gh pr merge --merge`. **Use a merge commit for upstream integration. Squash and rebase merges discard the ancestry this repository preserves.** Verify that the integrated upstream SHA is an ancestor of the final hosted `main`. `git log main..upstream/main` lists pending upstream commits, and `git diff upstream/main...main` shows the Local delta after integration.
+The weekly `Mirror upstream` job fetches exact upstream history, rebases only commits between the tracked upstream SHA and Local `main`, and atomically updates both branches with explicit `force-with-lease` expectations. It retains the previous Local tip under `local-rebase/<old-main-sha>` tags. Unchanged upstream creates no commit or tag.
 
-The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed branch, PR merge and release. Install only after active runs finish.
+Conflicts, divergent upstream history, non-linear Local history, rejected pushes, or concurrent branch updates leave both hosted branches unchanged. For a conflict, fetch both repositories in a clean feature worktree, rebase the Local series onto the new upstream revision, resolve and validate it, then obtain approval for the exact replacement tips before retrying an atomic leased push. Do not merge upstream into Local `main`.
+
+After an automatic update, feature branches may need rebasing onto the new Local `main`. For an existing clean checkout, save any work and use `git rebase --onto github/main <previous-local-main> <feature-branch>`. Use the recorded old tip from the sync log or backup tag. This prevents replaying the old Local series as feature changes.
+
+The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 
 The `Local desktop build` workflow builds a self-contained macOS arm64 app on
 the standard `macos-15` runner. It runs only through `workflow_dispatch` and
@@ -31,11 +35,11 @@ Add the workflow to your own GitHub repository's default branch, then select
 When importing a fork, review its inherited workflows before enabling Actions;
 upstream release workflows are not configured for this personal build.
 
-Enable only `Local desktop build` and `Mirror upstream` in the personal repository. The mirror job checks upstream main every Monday at 07:17 UTC and can also run manually. It fast-forwards `upstream/main` to the exact original SHA, including `.github`. It leaves custom `main` unchanged and does not build or release the app.
+Enable only `Local desktop build` and `Mirror upstream` in the personal repository. The updater runs every Monday at 07:17 UTC and can also run manually. It does not build or release the app. Keep inherited upstream workflows disabled.
 
-Unchanged revisions create no commit. Divergent or backwards upstream history stops without updating the mirror. Pushes never use force. Keep inherited upstream workflows disabled.
+Configure repository secret `UPSTREAM_SYNC_TOKEN` with a workflow-capable credential restricted to this repository. A fine-grained token needs Contents and Workflows write access. The updater stops before mutation if the secret is missing. The built-in `GITHUB_TOKEN` is insufficient for reliable synchronization of complete upstream workflow history. See [GitHub token permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
 
-The scheduled job uses the built-in `GITHUB_TOKEN` with Contents write access. GitHub can reject a push that introduces workflow-file changes without workflow-write authorization. If that happens, leave the mirror unchanged and run the same script with an approved workflow-capable GitHub credential. Do not replace original commits with filtered snapshots. The locally authenticated `gh` credential can run `bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git https://github.com/gmeszaros/t3code-local.git` after approval for the remote update.
+For an approved manual run, the locally authenticated `gh` credential can run `bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git https://github.com/gmeszaros/t3code-local.git`. This command also rewrites Local `main` and requires approval for that operation.
 
 The Linux job needs no dependencies, caches or artifacts. The macOS job runs only on demand. GitHub schedules may be delayed, and public scheduled workflows may need re-enabling after 60 days without repository activity.
 
