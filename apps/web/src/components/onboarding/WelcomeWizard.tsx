@@ -1,3 +1,5 @@
+import { ensureLocalApi } from "../../localApi";
+import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -16,6 +18,8 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthTerminalOperateScope,
+  AuthSettingsWriteScope,
+  AuthProvidersManageScope,
   CommandId,
   defaultInstanceIdForDriver,
   AuthOrchestrationOperateScope,
@@ -656,7 +660,7 @@ function PairingForm({
 
 // ── Step 3: agents ───────────────────────────────────────────
 
-const PRIMARY_AGENT_DRIVERS = ["codex", "claudeAgent"] as const;
+const PRIMARY_AGENT_DRIVERS = ["codex", "claudeAgent", "opencode", "zcode"] as const;
 type OnboardingAgentDriver = (typeof PRIMARY_AGENT_DRIVERS)[number];
 
 /** Setup values stay fixed while provider probes refresh the surrounding cards. */
@@ -715,6 +719,9 @@ function ConnectedAgentsStep({
   readonly machineLabel: string;
 }) {
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const canWriteSettings = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
+  const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -808,6 +815,34 @@ function ConnectedAgentsStep({
               key={driver}
               driver={driver}
               provider={provider}
+              enableAvailable={canWriteSettings && canManageProviders && serverConfig !== null}
+              onEnable={() => {
+                if (
+                  !provider ||
+                  !serverConfig ||
+                  !readEnvironmentScope(environmentId, AuthSettingsWriteScope) ||
+                  !readEnvironmentScope(environmentId, AuthProvidersManageScope)
+                )
+                  return;
+                const existing = serverConfig.settings.providerInstances[provider.instanceId];
+                updateSettings(
+                  buildProviderInstanceUpdatePatch({
+                    settings: serverConfig.settings,
+                    instanceId: provider.instanceId,
+                    instance: {
+                      ...existing,
+                      driver: provider.driver,
+                      enabled: true,
+                      config: {
+                        ...(typeof existing?.config === "object" && existing.config !== null
+                          ? existing.config
+                          : {}),
+                        enabled: true,
+                      },
+                    },
+                  }),
+                );
+              }}
               terminalOpen={terminalSession?.driver === driver}
               terminalAvailable={serverConfig !== null && canOperateTerminal}
               onOpenTerminal={() => {
@@ -960,12 +995,16 @@ function OnboardingCodexSetup({
 function AgentCard({
   driver,
   provider,
+  enableAvailable,
+  onEnable,
   terminalOpen,
   terminalAvailable,
   onOpenTerminal,
 }: {
   readonly driver: OnboardingAgentDriver;
   readonly provider: ServerProvider | undefined;
+  readonly enableAvailable?: boolean;
+  readonly onEnable?: () => void;
   readonly terminalOpen: boolean;
   readonly terminalAvailable: boolean;
   readonly onOpenTerminal: () => void;
@@ -996,10 +1035,26 @@ function AgentCard({
             <CheckIcon className="size-3.5" />
             Ready
           </span>
+        ) : driver === "zcode" && providerState === "install" ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() =>
+              void ensureLocalApi().shell.openExternal("https://zcode.z.ai/en/docs/install")
+            }
+          >
+            Download
+          </Button>
         ) : providerState === "checking" ? (
           <span className="text-xs text-muted-foreground">Checking...</span>
         ) : providerState === "disabled" ? (
-          <span className="text-xs text-muted-foreground">Disabled</span>
+          enableAvailable === undefined ? (
+            <span className="text-xs text-muted-foreground">Disabled</span>
+          ) : (
+            <Button size="xs" variant="ghost" disabled={!enableAvailable} onClick={onEnable}>
+              Enable
+            </Button>
+          )
         ) : providerState === "attention" ? (
           <span className="text-xs text-muted-foreground">{summary.headline}</span>
         ) : (

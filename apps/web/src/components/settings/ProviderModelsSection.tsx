@@ -59,6 +59,7 @@ function describeModelCapabilities(model: ServerProviderModel): string[] {
         (descriptor.id === "reasoningEffort" ||
           descriptor.id === "effort" ||
           descriptor.id === "reasoning" ||
+          descriptor.id === "reasoningLevel" ||
           descriptor.id === "variant"),
     )
   ) {
@@ -454,6 +455,7 @@ export function ProviderModelsSection({
   );
 
   const renderRow = (model: DisplayModel) => {
+    const displaySlug = driverKind === "zcode" ? model.slug.split("/").at(-1)! : model.slug;
     const capLabels = describeModelCapabilities(model);
     const group = groupOf(model);
     // Hidden is read from the preference itself: a favorited model can still be
@@ -484,9 +486,9 @@ export function ProviderModelsSection({
         {starButton(model, isFavorite)}
         <span className="flex min-w-0 items-baseline gap-2">
           <span className={cn(nameClassName, "truncate")}>{model.name}</span>
-          {model.name !== model.slug ? (
+          {model.name !== displaySlug ? (
             <code className="truncate font-mono text-2xs text-muted-foreground/70">
-              {model.slug}
+              {displaySlug}
             </code>
           ) : null}
           {model.isCustom ? (

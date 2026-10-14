@@ -59,7 +59,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNameInstructions",
   ],
   "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess"],
-  maintenance: ["continueThreadsAfterServerUpdate"],
+  maintenance: ["continueThreadsAfterServerUpdate", "continueAfterProviderFailure"],
 };
 
 const SUBMODULE_CHOICES: ReadonlyArray<{
@@ -230,6 +230,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     (target) =>
       target.environment.serverConfig.environment.capabilities.threadRestartContinuation === true,
   );
+  const supportsFailureContinuation = targets.every(
+    (target) =>
+      target.environment.serverConfig.environment.capabilities.threadFailureContinuation === true,
+  );
+
   const disabledFor = (key: string) =>
     disabled ||
     (projectSelected &&
@@ -480,6 +485,16 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                         }
                       />
                     </View>
+                    <SettingsSwitchRow
+                      icon="arrow.uturn.forward"
+                      label="Continue after temporary failure"
+                      subtitle="Continue once after at least 30 seconds, using the same provider and model. Excludes quota, billing, and permission failures."
+                      value={uniform("continueAfterProviderFailure")}
+                      disabled={
+                        disabledFor("continueAfterProviderFailure") || !supportsFailureContinuation
+                      }
+                      onValueChange={(value) => write({ continueAfterProviderFailure: value })}
+                    />
                   </SettingsSection>
                 </>
               ) : null}

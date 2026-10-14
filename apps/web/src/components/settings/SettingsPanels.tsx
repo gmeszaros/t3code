@@ -827,6 +827,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
+      continueAfterProviderFailure: DEFAULT_UNIFIED_SETTINGS.continueAfterProviderFailure,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
       backgroundActivityProfile: DEFAULT_UNIFIED_SETTINGS.backgroundActivityProfile,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
@@ -2217,6 +2218,11 @@ export function GeneralSettingsPanel() {
     connectedEnvironments.every(
       (target) => target.serverConfig?.environment.capabilities.threadRestartContinuation === true,
     );
+  const supportsFailureContinuation =
+    connectedEnvironments.length > 0 &&
+    connectedEnvironments.every(
+      (target) => target.serverConfig?.environment.capabilities.threadFailureContinuation === true,
+    );
 
   const textGenerationProviders = serverProviders.filter(
     (provider) => provider.supportsTextGeneration !== false,
@@ -2939,6 +2945,29 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableProviderUpdateChecks: Boolean(checked) })
               }
               aria-label="Check provider versions"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("continue-after-provider-failure")}
+          serverScoped
+          settingKeys={["continueAfterProviderFailure"]}
+          description="Continue once after a temporary capacity, connection, or service failure. Waits at least 30 seconds and keeps the same provider, model, and permissions. Quota and billing failures are excluded."
+          status={
+            !supportsFailureContinuation
+              ? "Update selected environments to support failure continuation."
+              : undefined
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["continueAfterProviderFailure"]}
+              checked={settings.continueAfterProviderFailure}
+              disabled={!supportsFailureContinuation}
+              onCheckedChange={(checked) =>
+                updateSettings({ continueAfterProviderFailure: Boolean(checked) })
+              }
+              aria-label="Continue after temporary provider failure"
             />
           }
         />

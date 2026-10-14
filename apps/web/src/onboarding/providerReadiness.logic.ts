@@ -1,6 +1,8 @@
+import { OpenCodeSettings } from "@t3tools/provider-opencode/settings";
 import {
   ClaudeSettings,
   CodexSettings,
+  ZCodeSettings,
   type ExecutionEnvironmentPlatformOs,
   type ServerProvider,
   type ServerSettings,
@@ -9,6 +11,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+const decodeZCodeSettings = Schema.decodeUnknownOption(ZCodeSettings);
+const decodeOpenCodeSettings = Schema.decodeUnknownOption(OpenCodeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 const SAFE_SHELL_BINARY_PATTERN = /^[A-Za-z0-9_./:\\-]+$/;
 
@@ -74,14 +78,16 @@ export function selectOnboardingProvidersByDriver(
 }
 
 /**
- * Official standalone installers. Neither needs Node or npm, and both land in
- * the paths the server's provider maintenance recognizes as native, so the
- * one-click updater in Settings keeps working after install.
+ * Official provider installers, selected for the execution environment.
  */
 const NATIVE_INSTALL_COMMANDS = {
   claudeAgent: {
     windows: "irm https://claude.ai/install.ps1 | iex",
     posix: "curl -fsSL https://claude.ai/install.sh | bash",
+  },
+  opencode: {
+    windows: "npm install -g opencode-ai",
+    posix: "curl -fsSL https://opencode.ai/install | bash",
   },
   codex: {
     windows: "irm https://chatgpt.com/codex/install.ps1 | iex",
@@ -96,9 +102,10 @@ const NATIVE_INSTALL_COMMANDS = {
  * is a POSIX shell in practice.
  */
 export function resolveOnboardingProviderInstallCommand(
-  driver: keyof typeof NATIVE_INSTALL_COMMANDS,
+  driver: keyof typeof NATIVE_INSTALL_COMMANDS | "zcode",
   platform: ExecutionEnvironmentPlatformOs,
 ): string {
+  if (driver === "zcode") return "zcode login";
   const commands = NATIVE_INSTALL_COMMANDS[driver];
   return platform === "windows" ? commands.windows : commands.posix;
 }
@@ -121,6 +128,23 @@ export function resolveOnboardingProviderLoginCommand(
     const config = decodeCodexSettings(instance?.config ?? {});
     const binaryPath = Option.isSome(config) ? config.value.binaryPath : "codex";
     return `${quoteProviderBinary(binaryPath, "codex", platform)} login`;
+  }
+
+  if (provider.driver === "zcode" || provider.driver === "opencode") {
+    const binaryPath =
+      provider.driver === "zcode"
+        ? Option.getOrElse(
+            Option.map(decodeZCodeSettings(instance?.config ?? {}), (config) => config.binaryPath),
+            () => "zcode",
+          )
+        : Option.getOrElse(
+            Option.map(
+              decodeOpenCodeSettings(instance?.config ?? {}),
+              (config) => config.binaryPath,
+            ),
+            () => "opencode",
+          );
+    return `${quoteProviderBinary(binaryPath, provider.driver, platform)} ${provider.driver === "zcode" ? "login" : "auth login"}`;
   }
 
   return provider.driver;

@@ -473,6 +473,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "continue-after-provider-failure",
+    title: "Continue after temporary provider failure",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["automatic retry capacity connection service failure continue delay"],
+  },
+  {
     id: "continue-threads-after-server-update",
     title: "Continue threads after restarts",
     to: "/settings/general",

@@ -5,6 +5,8 @@ import {
 } from "@t3tools/client-runtime/connection";
 import {
   AuthTerminalOperateScope,
+  AuthSettingsWriteScope,
+  AuthProvidersManageScope,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderDriverKind,
@@ -42,6 +44,7 @@ const state = vi.hoisted(() => ({
   write: vi.fn<(request: Request<TerminalWriteInput>) => Promise<CommandResult>>(),
   close: vi.fn<(request: Request<TerminalCloseInput>) => Promise<CommandResult>>(),
   refresh: vi.fn(),
+  updateSettings: vi.fn(),
   pair: vi.fn(),
   createProject: vi.fn(),
   importThreads: vi.fn(),
@@ -206,7 +209,11 @@ const session = (scopes: readonly AuthEnvironmentScope[]): AuthSessionState => (
 function setAccess(environmentId: EnvironmentId, allowed: boolean) {
   state.registry!.set(
     state.sessions.get(environmentId)!,
-    AsyncResult.success(session(allowed ? [AuthTerminalOperateScope] : [])),
+    AsyncResult.success(
+      session(
+        allowed ? [AuthTerminalOperateScope, AuthSettingsWriteScope, AuthProvidersManageScope] : [],
+      ),
+    ),
   );
 }
 function deferred<T>() {
@@ -251,9 +258,11 @@ beforeEach(() => {
   for (const id of [primaryId, remoteId]) {
     state.sessions.set(
       id,
-      Atom.make<SessionResult>(AsyncResult.success(session([AuthTerminalOperateScope]))).pipe(
-        Atom.keepAlive,
-      ),
+      Atom.make<SessionResult>(
+        AsyncResult.success(
+          session([AuthTerminalOperateScope, AuthSettingsWriteScope, AuthProvidersManageScope]),
+        ),
+      ).pipe(Atom.keepAlive),
     );
     state.providers.set(
       id,
@@ -282,6 +291,7 @@ beforeEach(() => {
   state.open.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.write.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.close.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  state.updateSettings.mockReset();
   state.refresh.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.pair.mockReset().mockResolvedValue(AsyncResult.success(remoteId));
   state.complete.mockReset().mockResolvedValue(undefined);
@@ -299,6 +309,64 @@ afterEach(async () => {
 });
 
 describe("welcome agent terminal setup", () => {
+  it("offers OpenCode enablement without changing explicit disables until requested", async () => {
+    const opencode: ServerProvider = {
+      ...missingClaude,
+      instanceId: ProviderInstanceId.make("opencode"),
+      driver: ProviderDriverKind.make("opencode"),
+      displayName: "OpenCode",
+      enabled: false,
+      status: "disabled",
+    };
+    state.registry!.set(state.providers.get(remoteId)!, [missingClaude, signedOutCodex, opencode]);
+    await enterRemoteAgents();
+    expect(text(renderer!.root)).toContain("OpenCode");
+    expect(state.updateSettings).not.toHaveBeenCalled();
+    await act(async () => button("Enable").props.onClick());
+    expect(state.updateSettings).toHaveBeenCalledWith({
+      providerInstances: {
+        [signedOutCodex.instanceId]: {
+          driver: signedOutCodex.driver,
+          config: { binaryPath: "/opt/codex-work", setupMode: "existing" },
+        },
+        opencode: { driver: opencode.driver, enabled: true, config: { enabled: true } },
+      },
+    });
+    setAccess(remoteId, false);
+    await act(async () => button("Enable").props.onClick());
+    expect(state.updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("discovers the installed ZCode account during fresh onboarding", async () => {
+    const zcode: ServerProvider = {
+      ...signedOutCodex,
+      instanceId: ProviderInstanceId.make("zcode"),
+      driver: ProviderDriverKind.make("zcode"),
+      displayName: "ZCode",
+      enabled: true,
+      installed: true,
+      status: "ready",
+      auth: { status: "authenticated", email: "person@example.test" },
+    };
+    const opencode: ServerProvider = {
+      ...zcode,
+      instanceId: ProviderInstanceId.make("opencode"),
+      driver: ProviderDriverKind.make("opencode"),
+      displayName: "OpenCode",
+    };
+    state.registry!.set(state.providers.get(remoteId)!, [
+      missingClaude,
+      signedOutCodex,
+      zcode,
+      opencode,
+    ]);
+    await enterRemoteAgents();
+    expect(text(renderer!.root)).toContain("ZCode");
+    expect(text(renderer!.root)).toContain("OpenCode");
+    expect(text(renderer!.root)).toContain("Ready to code.");
+    expect(state.open).not.toHaveBeenCalled();
+  });
+
   it("disables both setup actions for the paired read-only connection and preserves local completion", async () => {
     setAccess(remoteId, false);
     await enterRemoteAgents();
@@ -470,3 +538,7 @@ describe("welcome agent terminal setup", () => {
     expect(text(renderer!.root)).toContain("Connect your computers");
   });
 });
+
+vi.mock("../../hooks/useSettings", () => ({
+  useUpdateEnvironmentSettings: () => state.updateSettings,
+}));
