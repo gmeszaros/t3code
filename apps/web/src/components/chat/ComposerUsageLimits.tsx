@@ -6,7 +6,7 @@ import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
-import { LimitWindows, ResetCredits } from "../usage/UsageLimits";
+import { LimitWindows, ResetCredits, ResetCreditWindows } from "../usage/UsageLimits";
 import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
@@ -115,6 +115,7 @@ function UsageLimitsBannerBody({
                   Manage usage
                 </Button>
               ) : null}
+              <ResetCreditWindows windows={account.limits.resetCreditWindows} now={now} />
               {resetCreditInput && account.limits.resetCredits ? (
                 <ResetCredits
                   environmentId={environmentId}

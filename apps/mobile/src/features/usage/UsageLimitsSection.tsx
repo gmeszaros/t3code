@@ -6,6 +6,7 @@ import {
   type ProviderConsumeResetCreditInput,
   type ServerProvider,
   type ServerProviderResetCredits,
+  type ServerProviderResetCreditWindow,
   type ServerProviderUsageWindow,
   type UsageProviderKind,
 } from "@t3tools/contracts";
@@ -16,6 +17,7 @@ import {
   limitsNotice,
   paceOf,
   remainingPercent,
+  resetCreditWindowSummary,
 } from "@t3tools/shared/usageLimits";
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
@@ -124,6 +126,25 @@ function AccountInstanceLabel({ value }: { readonly value: string }) {
 }
 
 /** One account: icon, name and plan on a single line, then its windows. */
+export function ResetCreditWindows({
+  windows,
+  now,
+}: {
+  readonly windows: ReadonlyArray<ServerProviderResetCreditWindow> | undefined;
+  readonly now: number;
+}) {
+  if (!windows?.length) return null;
+  return (
+    <View className="gap-1" accessibilityLabel="Reset cards, view only">
+      {windows.map((window) => (
+        <Text key={window.id} className="text-sm text-foreground-muted">
+          {resetCreditWindowSummary(window, now)}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
 export function AccountLimits(props: {
   readonly driver: Driver;
   readonly label: string;
@@ -134,6 +155,7 @@ export function AccountLimits(props: {
   readonly first: boolean;
   /** Tighter padding for the composer card. */
   readonly dense?: boolean;
+  readonly windowLabel?: string;
   /** Sits at the end of the heading row, such as a close control. */
   readonly trailing?: ReactNode;
   readonly footer?: ReactNode;
@@ -183,6 +205,7 @@ export function AccountLimits(props: {
           <Text className="text-sm font-t3-medium text-primary">Manage usage</Text>
         </Pressable>
       ) : null}
+      <ResetCreditWindows windows={limits.resetCreditWindows} now={now} />
       {props.footer}
     </View>
   );
@@ -207,6 +230,7 @@ export function ResetCredits(props: {
   readonly now: number;
   /** A smaller pill for the composer card. */
   readonly dense?: boolean;
+  readonly windowLabel?: string;
 }) {
   const { environmentId, input, credits, now, dense = false } = props;
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
@@ -248,7 +272,9 @@ export function ResetCredits(props: {
     if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     Alert.alert(
       "Use a reset credit?",
-      "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
+      props.windowLabel
+        ? `This spends one reset credit for ${props.windowLabel}. It cannot be undone.`
+        : "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Use credit", onPress: () => void redeem() },

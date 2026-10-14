@@ -28,6 +28,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
   "anchor" | "handle" | "onPresentationChange"
 > {
+  turnUsageText?: string | null;
   forceNewWorktree?: boolean;
   environmentId: EnvironmentId;
   threadId: ThreadId;
@@ -102,6 +103,17 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     >
       {(density) => (
         <>
+          {props.turnUsageText ? (
+            <ThreadDetailsSection
+              headingId="thread-details-usage-heading"
+              title="Last ZCode turn"
+              separated={false}
+            >
+              <p className="px-1.5 text-xs text-muted-foreground tabular-nums">
+                {props.turnUsageText}
+              </p>
+            </ThreadDetailsSection>
+          ) : null}
           <ThreadDetailsSection
             headingId="thread-details-workspace-heading"
             title="Workspace"

@@ -15,6 +15,7 @@ import {
   type ServerProvider,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
+  type ServerProviderResetCreditWindow,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 
@@ -273,7 +274,12 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      if (
+        !provider.usageLimits ||
+        (limitsNotice(provider.usageLimits) !== null &&
+          !provider.usageLimits.resetCreditWindows?.length)
+      )
+        continue;
       merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
         key: `${environmentId}:${provider.instanceId}`,
         driver: provider.driver,
@@ -601,6 +607,21 @@ export function formatDuration(ms: number): string {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+export function resetCreditWindowSummary(
+  window: ServerProviderResetCreditWindow,
+  now: number,
+): string {
+  if (window.availableCount === null) return `${window.label}: status unavailable`;
+  const expiry = window.nextExpiresAt === undefined ? undefined : Date.parse(window.nextExpiresAt);
+  const suffix =
+    expiry === undefined || !Number.isFinite(expiry)
+      ? ""
+      : expiry <= now
+        ? " · earliest expiry passed"
+        : ` · expires in ${formatDuration(expiry - now)}`;
+  return `${window.label}: ${window.availableCount} available${suffix}`;
 }
 
 /** `resets in 2h 13m`, or null when the window has no reset. */

@@ -20,6 +20,7 @@ import {
   displayLimitWindows,
   elapsedShare,
   formatResetsIn,
+  resetCreditWindowSummary,
   limitsNotice,
   paceOf,
   providersWithLimits,
@@ -144,6 +145,38 @@ describe("providersWithLimits", () => {
 });
 
 describe("pools", () => {
+  it("retains read-only reset cards when the independent quota probe fails", () => {
+    const resetCreditWindows = [
+      { id: "weekly", label: "Weekly resets", availableCount: 2 },
+      { id: "five_hour", label: "5-hour resets", availableCount: null },
+    ];
+    const presentations = new Map([
+      [
+        EnvironmentId.make("local"),
+        {
+          entry: { target: { label: "Local" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: ProviderDriverKind.make("zcode"),
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:00:00.000Z",
+                  windows: [],
+                  unavailable: { reason: "probeFailed" },
+                  resetCreditWindows,
+                },
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+    const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+    expect(pools).toHaveLength(1);
+    expect(pools[0]?.windows).toEqual([]);
+    expect(pools[0]?.accounts[0]?.limits.resetCreditWindows).toEqual(resetCreditWindows);
+    expect(collectLimitNotices(presentations)).toHaveLength(1);
+  });
   const checkedAt = "2026-09-03T11:00:00.000Z";
   const weekly = {
     id: "seven_day",
@@ -1466,4 +1499,24 @@ describe("Antigravity limit presentation", () => {
     ]);
     expect(windows.map((window) => window.remainingPercent)).toEqual([80, 90, 10, 0]);
   });
+});
+
+it("distinguishes unavailable reset inventory from zero cards without offering a redemption action", () => {
+  expect(
+    resetCreditWindowSummary({ id: "weekly", label: "Weekly resets", availableCount: null }, now),
+  ).toBe("Weekly resets: status unavailable");
+  expect(
+    resetCreditWindowSummary({ id: "weekly", label: "Weekly resets", availableCount: 0 }, now),
+  ).toBe("Weekly resets: 0 available");
+  expect(
+    resetCreditWindowSummary(
+      {
+        id: "five_hour",
+        label: "5-hour resets",
+        availableCount: 2,
+        nextExpiresAt: "2026-09-03T14:00:00.000Z",
+      },
+      now,
+    ),
+  ).toBe("5-hour resets: 2 available · expires in 2h 0m");
 });

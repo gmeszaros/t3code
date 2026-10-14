@@ -23,7 +23,7 @@ import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
-import { ResetCredits } from "./UsageLimitsSection";
+import { ResetCredits, ResetCreditWindows } from "./UsageLimitsSection";
 import { useProviderColors } from "./usageProviders";
 
 const DRIVER_LABEL: Partial<Record<string, string>> = {
@@ -156,7 +156,12 @@ function PoolWindowCard({
       <View>
         {pool.columns.map(({ account, window }, index) => {
           if (!window) return null;
-          const credits = account.limits.resetCredits?.availableCount ?? 0;
+          const credits =
+            account.limits.resetCreditWindows?.find(
+              (credit) => credit.id === window.id && credit.canRedeem,
+            )?.availableCount ??
+            account.limits.resetCredits?.availableCount ??
+            0;
           const resetsIn = formatResetsIn(window, now);
           return (
             <Pressable
@@ -285,6 +290,13 @@ export function UsageLimitsSection({
                   />
                 );
               })}
+              {pool.accounts.map((account) => (
+                <ResetCreditWindows
+                  key={account.key}
+                  windows={account.limits.resetCreditWindows}
+                  now={now}
+                />
+              ))}
             </View>
           </Fragment>
         );
@@ -361,6 +373,9 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
     .find((candidate) => candidate.driver === account?.driver)
     ?.windows.find((candidate) => candidate.id === windowId && candidate.kind === windowKind);
   const window = pool?.members.find((member) => member.account.key === accountKey)?.window;
+  const windowCredit = account?.limits.resetCreditWindows?.find(
+    (credit) => credit.id === window?.id && credit.canRedeem,
+  );
   const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
   const [revealed, setRevealed] = useState(false);
   return (
@@ -435,6 +450,25 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                 <Text className="text-sm text-foreground-muted">{account.sourceLabel}</Text>
               )}
             </View>
+            <ResetCreditWindows windows={account.limits.resetCreditWindows} now={now} />
+            {account.driver === "zcode" &&
+            account.redeem &&
+            "instanceId" in account.redeem.input &&
+            windowCredit?.availableCount ? (
+              <ResetCredits
+                environmentId={account.redeem.environmentId}
+                input={{
+                  instanceId: account.redeem.input.instanceId,
+                  resetWindowId: windowCredit.id === "five_hour" ? "five_hour" : "weekly",
+                }}
+                credits={{
+                  availableCount: windowCredit.availableCount,
+                  nextExpiresAt: windowCredit.nextExpiresAt,
+                }}
+                now={now}
+                windowLabel={window.label}
+              />
+            ) : null}
             {account.redeem && account.limits.resetCredits ? (
               <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
                 <Text className="text-sm font-t3-medium text-foreground">Reset credits</Text>

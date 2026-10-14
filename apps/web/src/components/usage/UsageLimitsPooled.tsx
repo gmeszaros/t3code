@@ -15,6 +15,7 @@ import {
 } from "@t3tools/shared/usageLimits";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
+import type { ProviderConsumeResetCreditInput } from "@t3tools/contracts";
 
 import { ensureLocalApi } from "../../localApi";
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -30,6 +31,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
   PaceIcon,
   ResetCreditDialog,
+  ResetCreditWindows,
   barColor,
   resetCreditsSummary,
   useResetCredit,
@@ -160,8 +162,15 @@ function SegmentPopover({
     account.environments.length > 0
       ? account.environments.map((environment) => environment.label).join(", ")
       : account.sourceLabel;
+  const windowCredit = account.limits.resetCreditWindows?.find(
+    (credit) => credit.id === window.id && credit.canRedeem,
+  );
   const credits =
-    redeem && account.limits.resetCredits?.availableCount ? account.limits.resetCredits : null;
+    redeem && windowCredit?.availableCount
+      ? { availableCount: windowCredit.availableCount, nextExpiresAt: windowCredit.nextExpiresAt }
+      : redeem && account.limits.resetCredits?.availableCount
+        ? account.limits.resetCredits
+        : null;
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -199,6 +208,7 @@ function SegmentPopover({
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
       </div>
+      <ResetCreditWindows windows={account.limits.resetCreditWindows} now={now} />
       {credits && redeem ? (
         <div className="border-t border-border/60 pt-2.5 text-muted-foreground">
           <span className="flex items-center gap-3">
@@ -245,7 +255,11 @@ function PoolSegment({
   const [open, setOpen] = useState(false);
   const remaining = remainingPercent(window);
   const resetsIn = formatResetsIn(window, now);
-  const credits = account.limits.resetCredits?.availableCount ?? 0;
+  const credits =
+    account.limits.resetCreditWindows?.find((credit) => credit.id === window.id && credit.canRedeem)
+      ?.availableCount ??
+    account.limits.resetCredits?.availableCount ??
+    0;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -355,7 +369,11 @@ function LegendRow({
 }) {
   const remaining = remainingPercent(window);
   const resetsIn = formatResetsIn(window, now);
-  const credits = account.limits.resetCredits?.availableCount ?? 0;
+  const credits =
+    account.limits.resetCreditWindows?.find((credit) => credit.id === window.id && credit.canRedeem)
+      ?.availableCount ??
+    account.limits.resetCredits?.availableCount ??
+    0;
   return (
     <PopoverTrigger
       style={{ gridColumn: "1 / -1", gridRow: index + 1 }}
@@ -411,7 +429,12 @@ function RedeemableSegmentPopup({
   readonly redeemAt: NonNullable<LimitAccount["redeem"]>;
   readonly closePopover: () => void;
 }) {
-  const redeem = useResetCredit(redeemAt.environmentId, redeemAt.input);
+  const windowId = window.id === "five_hour" || window.id === "weekly" ? window.id : undefined;
+  const input: ProviderConsumeResetCreditInput =
+    account.driver === "zcode" && "instanceId" in redeemAt.input && windowId
+      ? { ...redeemAt.input, resetWindowId: windowId }
+      : redeemAt.input;
+  const redeem = useResetCredit(redeemAt.environmentId, input);
   return (
     <>
       <PopoverPopup side="top" sideOffset={6}>
@@ -428,6 +451,7 @@ function RedeemableSegmentPopup({
         />
       </PopoverPopup>
       <ResetCreditDialog
+        windowLabel={account.driver === "zcode" ? window.label : undefined}
         open={redeem.confirming}
         onOpenChange={redeem.setConfirming}
         onConfirm={() => void redeem.redeem()}
@@ -562,6 +586,13 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           />
         );
       })}
+      {pool.accounts.map((account) => (
+        <ResetCreditWindows
+          key={account.key}
+          windows={account.limits.resetCreditWindows}
+          now={now}
+        />
+      ))}
     </section>
   );
 }

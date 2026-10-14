@@ -5,6 +5,7 @@ import {
   ProviderConsumeResetCreditInput,
   ServerProvider,
   ServerProviderResetCredits,
+  type ServerProviderResetCreditWindow,
   ServerProviderUsageWindow,
   UsageProviderKind,
 } from "@t3tools/contracts";
@@ -16,6 +17,7 @@ import {
   type LimitPace,
   paceOf,
   remainingPercent,
+  resetCreditWindowSummary,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
@@ -248,11 +250,13 @@ export function useResetCredit(
  * would unmount a dialog rendered inside it.
  */
 export function ResetCreditDialog({
+  windowLabel,
   open,
   onOpenChange,
   onConfirm,
   disabled = false,
 }: {
+  readonly windowLabel?: string | undefined;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onConfirm: () => void;
@@ -264,8 +268,10 @@ export function ResetCreditDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Use a reset credit?</AlertDialogTitle>
           <AlertDialogDescription>
-            This redeems one credit on your account and clears the current rate-limit windows. It
-            cannot be undone.
+            {windowLabel
+              ? `This spends one reset credit for ${windowLabel} on your account.`
+              : "This redeems one credit on your account and clears the current rate-limit windows."}{" "}
+            It cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -294,6 +300,40 @@ export function resetCreditsSummary(
   return `${credits.availableCount} ${credits.availableCount === 1 ? "reset credit" : "reset credits"} banked${
     expiresIn ? ` · next expires in ${expiresIn}` : ""
   }`;
+}
+
+export function ResetCreditWindows({
+  windows,
+  now,
+}: {
+  readonly windows: ReadonlyArray<ServerProviderResetCreditWindow> | undefined;
+  readonly now: number;
+}) {
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  if (!windows?.length) return null;
+  return (
+    <div
+      className="flex flex-col gap-1 text-xs text-muted-foreground"
+      aria-label="Reset cards, view only"
+    >
+      {windows.map((window) =>
+        window.nextExpiresAt ? (
+          <Tooltip key={window.id}>
+            <TooltipTrigger render={<span className="tabular-nums" />}>
+              {resetCreditWindowSummary(window, now)}
+            </TooltipTrigger>
+            <TooltipPopup>
+              {formatUpcomingTimestamp(window.nextExpiresAt, timestampFormat, now)}
+            </TooltipPopup>
+          </Tooltip>
+        ) : (
+          <span key={window.id} className="tabular-nums">
+            {resetCreditWindowSummary(window, now)}
+          </span>
+        ),
+      )}
+    </div>
+  );
 }
 
 /** Banked reset credits with the redeem button and its confirm, self-contained. */
