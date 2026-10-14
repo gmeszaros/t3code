@@ -608,6 +608,15 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         ELECTRON_RUN_AS_NODE: "1",
         // The server names this launcher in commands it asks a person to run.
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
+        ...(environment.platform === "darwin"
+          ? {
+              T3CODE_ZCODE_NODE_PRELOAD: environment.path.join(
+                environment.dirname,
+                "zcode",
+                "HeadlessPreload.cjs",
+              ),
+            }
+          : {}),
       },
       // Primary wants process.env (PATH, dev-runner's T3CODE_HOME, etc.).
       extendEnv: true,

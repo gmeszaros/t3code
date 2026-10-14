@@ -36,13 +36,19 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   function* (input: {
     readonly appDataDirectory: string;
     readonly isDevelopment: boolean;
+    readonly isLocalBuild: boolean;
     readonly platform: NodeJS.Platform;
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    // A local fork build never shares Chromium storage with an installed T3
+    // Code: two production-profile instances crash on Keychain and IndexedDB
+    // contention. T3_LOCAL_BUILD=1 opts this build into its own namespace.
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
-      : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };
+      : input.isLocalBuild
+        ? { current: "t3code-local", legacy: "T3 Code (Local)" }
+        : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };
     const destinationPath = path.join(input.appDataDirectory, names.current);
     const legacyPath = path.join(input.appDataDirectory, names.legacy);
     const inspect = (resourcePath: string) =>

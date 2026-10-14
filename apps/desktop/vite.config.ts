@@ -78,6 +78,7 @@ export default defineConfig({
         "src/snapShot/RegionSnapShotWorker.ts",
         "src/snapShot/SnapShotAccessibilityWorker.ts",
         "src/computer/ComputerWorker.ts",
+        "src/zcode/HeadlessPreload.ts",
       ],
       clean: false,
       deps: {

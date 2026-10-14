@@ -19,6 +19,7 @@ it.effect("identifies a failed source read and preserves its cause", () => {
     const error = yield* resolveUserDataPath({
       appDataDirectory: "/profiles",
       isDevelopment: false,
+      isLocalBuild: false,
       platform: "win32",
     }).pipe(Effect.flip);
     assert.equal(error.operation, "read");
@@ -54,6 +55,7 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* resolveUserDataPath({
         appDataDirectory: directory,
         isDevelopment: false,
+        isLocalBuild: false,
         platform: "win32",
       });
       assert.equal(yield* fs.readFileString(path.join(destination, "Local State")), state);
@@ -63,6 +65,7 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* resolveUserDataPath({
         appDataDirectory: directory,
         isDevelopment: false,
+        isLocalBuild: false,
         platform: "win32",
       });
       assert.equal(

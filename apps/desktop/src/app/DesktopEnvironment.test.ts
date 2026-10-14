@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
+import { resolveUserDataPath } from "./DesktopUserData.ts";
 
 const defaultInput = {
   dirname: "/repo/apps/desktop/dist-electron",
@@ -39,6 +40,45 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("keeps the local build app identity and Chromium storage separate", () =>
+    Effect.gen(function* () {
+      const local = yield* makeEnvironment({}, { T3_LOCAL_BUILD: "1" });
+      const production = yield* makeEnvironment();
+      assert.equal(local.displayName, "T3 Code (Local)");
+      assert.notEqual(local.appUserModelId, production.appUserModelId);
+      const localProfile = yield* resolveUserDataPath(local).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      const productionProfile = yield* resolveUserDataPath(production).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      assert.notEqual(localProfile, productionProfile);
+      assert.equal(localProfile, "/Users/alice/Library/Application Support/t3code-local");
+    }),
+  );
+  it.effect("isolates local Chromium profiles per explicit T3 home", () =>
+    Effect.gen(function* () {
+      const first = yield* makeEnvironment({}, { T3_LOCAL_BUILD: "1", T3CODE_HOME: "/tmp/first" });
+      const second = yield* makeEnvironment(
+        {},
+        { T3_LOCAL_BUILD: "1", T3CODE_HOME: "/tmp/second" },
+      );
+      const production = yield* makeEnvironment({}, { T3CODE_HOME: "/tmp/first" });
+      const firstProfile = yield* resolveUserDataPath(first).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      const secondProfile = yield* resolveUserDataPath(second).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      const productionProfile = yield* resolveUserDataPath(production).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      assert.equal(firstProfile, "/tmp/first/electron/t3code-local");
+      assert.equal(secondProfile, "/tmp/second/electron/t3code-local");
+      assert.notEqual(firstProfile, secondProfile);
+      assert.equal(productionProfile, "/Users/alice/Library/Application Support/t3code-v2");
+    }),
+  );
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
