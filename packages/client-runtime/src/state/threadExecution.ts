@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ThreadProjection,
   orchestrationV2RunWorkStartedAt,
   type ThreadId,
+  type TurnTokenUsage,
 } from "@t3tools/contracts";
 import {
   backgroundWorkHoldsCompletion,
@@ -34,6 +35,68 @@ import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
 
 const ACTIVITY_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting"]);
 const INTERRUPTIBLE_RUN_STATUSES = new Set(["preparing", "starting", "running"]);
+
+/** The newest root turn wins, including a turn that did not report usage. */
+export function latestZCodeTurnUsage(
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "providerTurns" | "providerThreads" | "nodes" | "runs"
+  >,
+): { readonly usage: TurnTokenUsage | undefined } | null {
+  const roots = new Map(
+    projection.nodes
+      .filter((node) => node.kind === "root_turn" && node.parentNodeId === null)
+      .map((node) => [node.id, node]),
+  );
+  const runOrdinals = new Map(projection.runs.map((run) => [run.id, run.ordinal]));
+  const rootTurns = projection.providerTurns.filter((turn) => roots.has(turn.nodeId));
+  const latest = rootTurns.reduce<(typeof rootTurns)[number] | undefined>((previous, turn) => {
+    if (previous === undefined) return turn;
+    const runOrdinal = (candidate: typeof turn) => {
+      const runId = roots.get(candidate.nodeId)?.runId;
+      return runId === null || runId === undefined ? 0 : (runOrdinals.get(runId) ?? 0);
+    };
+    const runDifference = runOrdinal(turn) - runOrdinal(previous);
+    if (runDifference !== 0) return runDifference > 0 ? turn : previous;
+    const startedAt = (candidate: typeof turn) =>
+      candidate.startedAt === null ? 0 : DateTime.toEpochMillis(candidate.startedAt);
+    const timeDifference = startedAt(turn) - startedAt(previous);
+    return timeDifference > 0 || (timeDifference === 0 && turn.ordinal > previous.ordinal)
+      ? turn
+      : previous;
+  }, undefined);
+  if (
+    latest === undefined ||
+    projection.providerThreads.find((thread) => thread.id === latest.providerThreadId)?.driver !==
+      "zcode"
+  )
+    return null;
+  return { usage: latest.turnTokenUsage };
+}
+
+export function formatZCodeTurnUsage(usage: TurnTokenUsage | undefined): string | null {
+  const available = usage !== undefined && usage.usageStatus !== "unavailable";
+  if (!available) return null;
+  const input = available ? usage.inputTokens : undefined;
+  const output = available ? usage.outputTokens : undefined;
+  const total = available
+    ? (usage.totalTokens ??
+      (input !== undefined && output !== undefined ? input + output : undefined))
+    : undefined;
+  if (total === undefined && input === undefined && output === undefined) return null;
+  const tokens = total === undefined ? "Tokens" : String(total);
+  const breakdown =
+    input === undefined && output === undefined
+      ? ""
+      : ` (${[input === undefined ? null : `input ${input}`, output === undefined ? null : `output ${output}`].filter(Boolean).join(", ")})`;
+  const partial = available && usage.usageStatus === "partial" ? " [partial]" : "";
+  const cache = [
+    usage.cachedInputTokens === undefined ? null : `cache read ${usage.cachedInputTokens}`,
+    usage.cacheCreationTokens === undefined ? null : `cache write ${usage.cacheCreationTokens}`,
+    usage.reasoningTokens === undefined ? null : `reasoning ${usage.reasoningTokens}`,
+  ].filter(Boolean);
+  return `${tokens}${breakdown}${partial}${cache.length ? ` · ${cache.join(" · ")}` : ""}`;
+}
 
 function latestMatchingRun(
   projection: OrchestrationV2ThreadProjection,
@@ -269,6 +332,7 @@ export function deriveThreadRuntime(
         : DateTime.formatIso(orchestrationV2RunWorkStartedAt(liveActivityRun)),
     providerInstanceId: projection.thread.providerInstanceId,
     providerName: providerSession?.driver ?? null,
+    automaticContinuation: latestRunProjection?.automaticContinuation ?? null,
     ...threadErrorSummary(
       latestRootProviderFailure(latestRunProjection, projection.turnItems),
       providerSession?.lastError ?? null,

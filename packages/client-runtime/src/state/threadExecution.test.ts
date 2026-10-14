@@ -6,6 +6,8 @@ import {
   ProviderThreadId,
   ProviderSessionId,
   ProviderDriverKind,
+  ProviderTurnId,
+  type TurnTokenUsage,
   RunId,
   ThreadId,
   type OrchestrationV2ExecutionNode,
@@ -28,10 +30,127 @@ import {
   deriveThreadActivityRun,
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
+  latestZCodeTurnUsage,
+  formatZCodeTurnUsage,
 } from "./threadExecution.ts";
 import { threadRuntimeCanArchive, type ThreadRuntimeSummary } from "./models.ts";
 
 const now = DateTime.makeUnsafe("2026-07-28T10:00:00.000Z");
+
+describe("native ZCode usage presentation", () => {
+  const providerThreadId = ProviderThreadId.make("zcode-native");
+  const usage = {
+    usageScope: "main_agent",
+    usageStatus: "complete",
+    hasSubagents: false,
+    inputTokens: 30,
+    outputTokens: 7,
+    totalTokens: 37,
+  } satisfies TurnTokenUsage;
+  const firstRun = run("first-usage", 1, "completed");
+  const secondRun = run("second-usage", 2, "completed");
+  const root = (runId: RunId, kind: OrchestrationV2ExecutionNode["kind"] = "root_turn") => ({
+    id: NodeId.make(`root-${runId}`),
+    threadId: v2Projection.thread.id,
+    runId,
+    parentNodeId: null,
+    rootNodeId: NodeId.make(`root-${runId}`),
+    kind,
+    status: "completed" as const,
+    countsForRun: true,
+    providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    runtimeRequestId: null,
+    checkpointScopeId: null,
+    startedAt: now,
+    completedAt: now,
+  });
+  const turn = (runId: RunId, ordinal: number, turnTokenUsage?: TurnTokenUsage) => ({
+    id: ProviderTurnId.make(`usage-${runId}`),
+    providerThreadId,
+    nodeId: root(runId).id,
+    runAttemptId: null,
+    nativeTurnRef: null,
+    ordinal,
+    status: "completed" as const,
+    startedAt: now,
+    completedAt: now,
+    ...(turnTokenUsage === undefined ? {} : { turnTokenUsage }),
+  });
+  const providerThread = {
+    id: providerThreadId,
+    driver: ProviderDriverKind.make("zcode"),
+    providerInstanceId: ProviderInstanceId.make("zcode"),
+    providerSessionId: null,
+    appThreadId: v2Projection.thread.id,
+    ownerNodeId: null,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    status: "idle" as const,
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const projection = {
+    ...v2Projection,
+    runs: [firstRun, secondRun],
+    nodes: [root(firstRun.id), root(secondRun.id)],
+    providerThreads: [providerThread],
+    providerTurns: [turn(firstRun.id, 5, usage), turn(secondRun.id, 1)],
+  };
+
+  it("omits unavailable usage after resume, without borrowing old counts", () => {
+    expect(latestZCodeTurnUsage(projection)).toEqual({ usage: undefined });
+    const text = formatZCodeTurnUsage(latestZCodeTurnUsage(projection)?.usage);
+    expect(text).toBeNull();
+  });
+
+  it("shows exact input/output totals, partial totals and explicit zero distinctly", () => {
+    expect(formatZCodeTurnUsage(usage)).toContain("37 (input 30, output 7)");
+    expect(
+      formatZCodeTurnUsage({
+        usageScope: "main_agent",
+        usageStatus: "partial",
+        hasSubagents: false,
+        totalTokens: 37,
+      }),
+    ).toContain("37 [partial]");
+    expect(
+      formatZCodeTurnUsage({ ...usage, inputTokens: 0, outputTokens: 0, totalTokens: 0 }),
+    ).toContain("0 (input 0, output 0)");
+  });
+
+  it("includes reported cache and reasoning counts without invented costs", () => {
+    expect(
+      formatZCodeTurnUsage({
+        ...usage,
+        cachedInputTokens: 20,
+        cacheCreationTokens: 5,
+        reasoningTokens: 2,
+      }),
+    ).toBe("37 (input 30, output 7) · cache read 20 · cache write 5 · reasoning 2");
+    expect(formatZCodeTurnUsage({ ...usage, usageStatus: "unavailable" })).toBeNull();
+  });
+
+  it("ignores child turns and stops displaying ZCode usage after a provider switch", () => {
+    expect(
+      latestZCodeTurnUsage({
+        ...projection,
+        nodes: [root(firstRun.id), root(secondRun.id, "subagent")],
+      }),
+    ).toEqual({ usage });
+    expect(
+      latestZCodeTurnUsage({
+        ...projection,
+        providerThreads: [{ ...providerThread, driver: ProviderDriverKind.make("codex") }],
+      }),
+    ).toBeNull();
+  });
+});
 
 function run(id: string, ordinal: number, status: OrchestrationV2RunStatus) {
   return {

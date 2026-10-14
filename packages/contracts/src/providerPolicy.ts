@@ -57,6 +57,8 @@ export const ProviderApprovalDecision = Schema.Literals([
 export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 
 export const ProviderApprovalOption = Schema.Struct({
+  /** Opaque provider identity when several choices share the same decision. */
+  optionId: Schema.optional(TrimmedNonEmptyString),
   decision: ProviderApprovalDecision,
   label: TrimmedNonEmptyString,
   /** Provider-supplied caution shown next to the option, such as a prompt injection warning. */

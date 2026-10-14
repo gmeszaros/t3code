@@ -62,6 +62,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
@@ -135,6 +136,10 @@ import {
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  continuationConfigurationFingerprint,
+  isTransientTerminalFailure,
+} from "./ProviderFailureContinuation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
@@ -4566,6 +4571,134 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (command.failureContinuationOfRunId !== undefined) {
+        const source = projection.runs.find((run) => run.id === command.failureContinuationOfRunId);
+        const recovery = source?.automaticContinuation;
+        const failure = latestRootProviderFailure(source ?? null, projection.turnItems);
+        const settings = yield* serverSettings.getSettings.pipe(mapDispatchError(command));
+        const now = yield* DateTime.now;
+        const nativeThread = projection.providerThreads.find(
+          (thread) => thread.id === source?.providerThreadId,
+        );
+        let delegatedEligible = true;
+        const parentThreadId = projection.thread.lineage.parentThreadId;
+        if (
+          projection.thread.lineage.relationshipToParent === "subagent" &&
+          parentThreadId !== null
+        ) {
+          const parent = yield* projectionStore
+            .getThreadRecords(parentThreadId, ["subagents"])
+            .pipe(mapDispatchError(command));
+          const taskId =
+            source?.delegatedTaskId ??
+            (projection.thread.forkedFrom?.type === "node"
+              ? projection.thread.forkedFrom.nodeId
+              : undefined);
+          const task = parent.subagents.find(
+            (task) =>
+              task.id === taskId &&
+              task.origin === "app_owned" &&
+              task.childThreadId === command.threadId,
+          );
+          delegatedEligible =
+            task !== undefined &&
+            task.result === null &&
+            (task.status === "pending" || task.status === "running" || task.status === "waiting") &&
+            task.completionDelivery?.state !== "disposed" &&
+            parent.thread.archivedAt === null &&
+            parent.thread.deletedAt === null &&
+            (task.runId === null || !(yield* stopReachedRun(command, parentThreadId, task.runId)));
+        }
+        const eligible =
+          delegatedEligible &&
+          command.createdBy === "agent" &&
+          command.creationSource === "server" &&
+          source !== undefined &&
+          recovery?.status === "scheduled" &&
+          source.status === "failed" &&
+          source.failureContinuationOfRunId === undefined &&
+          latestExecutedRun(projection.runs)?.id === source.id &&
+          !projection.runs.some(
+            (run) =>
+              run.id !== source.id &&
+              (run.ordinal > source.ordinal ||
+                run.status === "queued" ||
+                run.status === "preparing" ||
+                run.status === "starting" ||
+                run.status === "running" ||
+                run.status === "waiting"),
+          ) &&
+          failure !== null &&
+          failure !== undefined &&
+          isTransientTerminalFailure(failure) &&
+          DateTime.toEpochMillis(recovery.dueAt) <= DateTime.toEpochMillis(now) &&
+          resolveProjectSettings(settings, projection.thread.projectId).settings
+            .continueAfterProviderFailure &&
+          continuationConfigurationFingerprint(settings, source.providerInstanceId) ===
+            recovery.configurationFingerprint &&
+          projection.thread.archivedAt === null &&
+          projection.thread.deletedAt === null &&
+          projection.thread.settledOverride !== "settled" &&
+          projection.thread.snoozedUntil == null &&
+          projection.thread.providerInstanceId === source.providerInstanceId &&
+          modelSelectionsEqual(projection.thread.modelSelection, source.modelSelection) &&
+          projection.thread.runtimeMode === recovery.runtimeMode &&
+          projection.thread.interactionMode === recovery.interactionMode &&
+          projection.thread.activeProviderThreadId === source.providerThreadId &&
+          nativeThread?.ownerNodeId === null &&
+          nativeThread.nativeThreadRef?.strength === "strong" &&
+          nativeThread.nativeThreadRef.nativeId != null &&
+          nativeThread.status !== "closed" &&
+          nativeThread.status !== "archived" &&
+          !projection.runtimeRequests.some((request) => request.status === "pending") &&
+          !projection.turnItems.some(
+            (item) => item.type === "secret_request" && item.secretStatus === "pending",
+          ) &&
+          !(yield* stopReachedRun(command, command.threadId, source.id));
+        if (!eligible) {
+          if (source !== undefined && recovery?.status === "scheduled") {
+            yield* emit(
+              events,
+              command,
+            )({
+              type: "run.updated",
+              threadId: command.threadId,
+              runId: source.id,
+              occurredAt: now,
+              payload: { ...source, automaticContinuation: { ...recovery, status: "cancelled" } },
+            });
+          } else {
+            yield* emit(
+              events,
+              command,
+            )({
+              type: "thread.metadata-updated",
+              threadId: command.threadId,
+              occurredAt: now,
+              payload: projection.thread,
+            });
+          }
+          return;
+        }
+        // The source selection is authoritative; callers cannot request a fallback.
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "run.updated",
+          threadId: command.threadId,
+          runId: source.id,
+          occurredAt: now,
+          payload: { ...source, automaticContinuation: { ...recovery, status: "retrying" } },
+        });
+        command = {
+          ...command,
+          modelSelection: source.modelSelection,
+          text: "continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        };
+      }
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
         const limited = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -4659,9 +4792,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
 
-      const continuedTaskId = projection.runs.find(
-        (run) => run.id === command.restartContinuationOfRunId,
-      )?.delegatedTaskId;
+      const previousRun = latestExecutedRun(projection.runs);
+      const failureSource = projection.runs.find(
+        (run) => run.id === command.failureContinuationOfRunId,
+      );
+      const continuedFailureChain =
+        command.createdBy !== "user" && command.creationSource !== "mcp"
+          ? (failureSource ??
+            (previousRun?.automaticContinuation !== undefined ? previousRun : undefined))
+          : undefined;
+      const continuedTaskId =
+        projection.runs.find(
+          (run) =>
+            run.id === (command.failureContinuationOfRunId ?? command.restartContinuationOfRunId),
+        )?.delegatedTaskId ??
+        continuedFailureChain?.delegatedTaskId ??
+        (continuedFailureChain !== undefined &&
+        projection.thread.lineage.relationshipToParent === "subagent" &&
+        projection.thread.forkedFrom?.type === "node"
+          ? projection.thread.forkedFrom.nodeId
+          : undefined);
 
       if (projection.thread.settledOverride !== null) {
         const now = yield* DateTime.now;
@@ -5099,6 +5249,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           checkpointId: null,
           contextHandoffId: null,
           ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+          ...(continuedFailureChain === undefined
+            ? {}
+            : {
+                failureContinuationOfRunId:
+                  continuedFailureChain.failureContinuationOfRunId ?? continuedFailureChain.id,
+                ...(continuedFailureChain.automaticContinuation === undefined
+                  ? {}
+                  : {
+                      automaticContinuation: {
+                        ...continuedFailureChain.automaticContinuation,
+                        status: "retrying" as const,
+                      },
+                    }),
+              }),
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -5439,6 +5603,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           checkpointId: null,
           contextHandoffId: legacyImportHandoff?.id ?? null,
           ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+          ...(continuedFailureChain === undefined
+            ? {}
+            : {
+                failureContinuationOfRunId:
+                  continuedFailureChain.failureContinuationOfRunId ?? continuedFailureChain.id,
+                ...(continuedFailureChain.automaticContinuation === undefined
+                  ? {}
+                  : {
+                      automaticContinuation: {
+                        ...continuedFailureChain.automaticContinuation,
+                        status: "retrying" as const,
+                      },
+                    }),
+              }),
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -6136,6 +6314,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           legacyImportRecoveryHandoff?.id ??
           null,
         ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+        ...(continuedFailureChain === undefined
+          ? {}
+          : {
+              failureContinuationOfRunId:
+                continuedFailureChain.failureContinuationOfRunId ?? continuedFailureChain.id,
+              ...(continuedFailureChain.automaticContinuation === undefined
+                ? {}
+                : {
+                    automaticContinuation: {
+                      ...continuedFailureChain.automaticContinuation,
+                      status: "retrying" as const,
+                    },
+                  }),
+            }),
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -7395,11 +7587,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
+      if (
+        command.optionId !== undefined &&
+        (context.item?.type !== "approval_request" ||
+          context.item.options?.filter(
+            (option) =>
+              option.optionId === command.optionId && option.decision === command.decision,
+          ).length !== 1)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Approval option was not offered by this runtime request.",
+        });
       const resolvedRequest = {
         ...runtimeRequest,
         status: "resolved" as const,
         resolvedAt: now,
         ...(command.decision === undefined ? {} : { decision: command.decision }),
+        ...(command.optionId === undefined ? {} : { optionId: command.optionId }),
         ...(command.answers === undefined ? {} : { answers: command.answers }),
       };
       const emitEvent = emit(events, command);
@@ -7571,6 +7777,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerSessionId,
             requestId: command.requestId,
             ...(command.decision === undefined ? {} : { decision: command.decision }),
+            ...(command.optionId === undefined ? {} : { optionId: command.optionId }),
             ...(command.answers === undefined ? {} : { answers: command.answers }),
           },
         } satisfies PendingOrchestrationEffectV2,
@@ -9897,7 +10104,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    */
   const awaitsRestartContinuation = (run: OrchestrationV2Run) =>
     effectOutbox
-      .get(`effect:restart-continuation:${run.id}`)
+      .get(
+        run.automaticContinuation?.status === "scheduled"
+          ? `effect:failure-continuation:${run.id}`
+          : `effect:restart-continuation:${run.id}`,
+      )
       .pipe(
         Effect.map(
           Option.exists((effect) => effect.status === "pending" || effect.status === "running"),
@@ -10748,6 +10959,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           readonly reason: string;
         }
       | undefined;
+    if (
+      (command.type === "message.dispatch" && command.failureContinuationOfRunId === undefined) ||
+      command.type === "thread.stop" ||
+      command.type === "run.interrupt" ||
+      command.type === "thread.archive" ||
+      command.type === "thread.delete" ||
+      command.type === "thread.snooze" ||
+      command.type === "provider.switch" ||
+      command.type === "checkpoint.rollback" ||
+      command.type === "thread.settle" ||
+      command.type === "thread.model-selection.set" ||
+      command.type === "thread.runtime-mode.set" ||
+      command.type === "thread.interaction-mode.set"
+    ) {
+      const threadId = commandThreadId(command);
+      const controls = yield* projectionStore
+        .getThreadRecords(threadId, ["runs"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      for (const run of controls.runs) {
+        if (run.automaticContinuation?.status !== "scheduled") continue;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: yield* DateTime.now,
+          payload: {
+            ...run,
+            automaticContinuation: { ...run.automaticContinuation, status: "cancelled" },
+          },
+        });
+      }
+    }
     switch (command.type) {
       case "thread.create":
         yield* dispatchThreadCreate(command, events);

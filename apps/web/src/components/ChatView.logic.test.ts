@@ -70,6 +70,7 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
+  buildManualContinuationTurnInput,
   getStartedThreadModelChangeBlockReason,
   hasEnvironmentReconnectWarningGraceElapsed,
   hasServerAcknowledgedLocalDispatch,
@@ -263,6 +264,50 @@ describe("resolveThreadMetadataUpdateForNextTurn", () => {
         nextBranch: "feature/current",
       }),
     ).toBeNull();
+  });
+});
+
+describe("buildManualContinuationTurnInput", () => {
+  const baseInput = {
+    threadId: ThreadId.make("thread-1"),
+    resumableRunId: RunId.make("run-exhausted"),
+    message: {
+      messageId: MessageId.make("message-continue"),
+      text: "Continue where you left off.",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+  } as const;
+
+  it("carries the composer's picked provider, model, and options onto the continuation", () => {
+    const picked = {
+      instanceId: ProviderInstanceId.make("zai-direct"),
+      model: "glm-5.3",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    expect(buildManualContinuationTurnInput({ ...baseInput, modelSelection: picked })).toEqual({
+      threadId: "thread-1",
+      manualContinuationOfRunId: "run-exhausted",
+      modelSelection: picked,
+      message: {
+        messageId: "message-continue",
+        role: "user",
+        text: "Continue where you left off.",
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      dispatchMode: "start",
+    });
+  });
+
+  it("omits the selection when the composer is gone so the server falls back to the thread", () => {
+    for (const modelSelection of [null, undefined]) {
+      const input = buildManualContinuationTurnInput({ ...baseInput, modelSelection });
+      expect(input).not.toHaveProperty("modelSelection");
+      expect(input.manualContinuationOfRunId).toBe("run-exhausted");
+      expect(input.dispatchMode).toBe("start");
+    }
   });
 });
 

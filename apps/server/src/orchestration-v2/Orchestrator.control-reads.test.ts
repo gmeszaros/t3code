@@ -131,7 +131,7 @@ it.effect(
           lastError: null,
         },
       });
-      for (const mode of ["live", "message"] as const) {
+      for (const mode of ["live", "message", "approval"] as const) {
         const requestId = RuntimeRequestId.make(`request:${mode}`);
         yield* projections.apply({
           id: EventId.make(`request:${mode}`),
@@ -143,10 +143,10 @@ it.effect(
             nodeId: NodeId.make(`node:${mode}`),
             providerTurnId: null,
             nativeRequestRef: null,
-            kind: "user_input",
+            kind: mode === "approval" ? "permission" : "user_input",
             status: "pending",
             responseCapability:
-              mode === "live"
+              mode !== "message"
                 ? { type: "live", providerSessionId: sessionId }
                 : { type: "message" },
             createdAt: now,
@@ -165,7 +165,7 @@ it.effect(
             runId: null,
             parentNodeId: null,
             rootNodeId: nodeId,
-            kind: "user_input_request",
+            kind: mode === "approval" ? "approval_request" : "user_input_request",
             status: "waiting",
             countsForRun: false,
             providerThreadId: null,
@@ -197,19 +197,58 @@ it.effect(
             startedAt: now,
             completedAt: null,
             updatedAt: now,
-            type: "user_input_request",
+            ...(mode === "approval"
+              ? {
+                  type: "approval_request" as const,
+                  requestKind: "permission" as const,
+                  options: [
+                    {
+                      optionId: "project-all",
+                      decision: "acceptAlways" as const,
+                      label: "Project all",
+                    },
+                    {
+                      optionId: "project-command",
+                      decision: "acceptAlways" as const,
+                      label: "Project command",
+                    },
+                  ],
+                }
+              : { type: "user_input_request" as const, questions: [] }),
             requestId,
-            questions: [],
           },
         });
+        if (mode === "approval") {
+          for (const [optionId, decision] of [
+            ["unknown", "acceptAlways"],
+            ["project-command", "accept"],
+          ] as const) {
+            const rejected = yield* Effect.exit(
+              orchestrator.dispatch({
+                type: "runtime-request.respond",
+                commandId: CommandId.make(`reject:${optionId}`),
+                threadId,
+                requestId,
+                optionId,
+                decision,
+              }),
+            );
+            assert.equal(rejected._tag, "Failure");
+            assert.equal(
+              (yield* projections.getRuntimeRequest(threadId, requestId))?.status,
+              "pending",
+            );
+          }
+        }
         yield* orchestrator.dispatch(
-          mode === "live"
+          mode !== "message"
             ? {
                 type: "runtime-request.respond",
                 commandId: CommandId.make(`respond:${mode}`),
                 threadId,
                 requestId,
-                decision: "accept",
+                decision: mode === "approval" ? "acceptAlways" : "accept",
+                ...(mode === "approval" ? { optionId: "project-command" } : {}),
               }
             : {
                 type: "thread.user-input.dismiss",
@@ -222,9 +261,20 @@ it.effect(
           (yield* projections.getRuntimeRequest(threadId, requestId))?.status,
           "resolved",
         );
+        if (mode === "approval") {
+          assert.equal(
+            (yield* projections.getRuntimeRequest(threadId, requestId))?.optionId,
+            "project-command",
+          );
+          const rows = yield* sql<{
+            payload_json: string;
+          }>`SELECT payload_json FROM orchestration_v2_effect_outbox
+            WHERE command_id = 'respond:approval' AND effect_type = 'runtime-request.respond'`;
+          assert.equal(JSON.parse(rows[0]!.payload_json).optionId, "project-command");
+        }
         const response = yield* projections.getRuntimeResponseContext(threadId, requestId);
-        assert.equal(response.node?.status, mode === "live" ? "completed" : "cancelled");
-        assert.equal(response.item?.status, mode === "live" ? "completed" : "cancelled");
+        assert.equal(response.node?.status, mode !== "message" ? "completed" : "cancelled");
+        assert.equal(response.item?.status, mode !== "message" ? "completed" : "cancelled");
       }
       yield* orchestrator.dispatch({
         type: "thread.metadata.update",

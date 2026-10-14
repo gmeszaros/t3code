@@ -16,6 +16,7 @@ export interface PendingApprovalCardProps {
   readonly onRespond: (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    optionId?: string,
   ) => Promise<unknown>;
 }
 
@@ -58,7 +59,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       <View className="flex-row flex-wrap gap-2.5">
         {options.map((option) => (
           <RequestActionButton
-            key={option.decision}
+            key={option.optionId ?? option.decision}
             label={option.label}
             tone={
               option.decision === "accept"
@@ -68,7 +69,9 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
                   : "secondary"
             }
             disabled={disabled || !props.canOperateThread}
-            onPress={() => void props.onRespond(props.approval.requestId, option.decision)}
+            onPress={() =>
+              void props.onRespond(props.approval.requestId, option.decision, option.optionId)
+            }
           />
         ))}
       </View>

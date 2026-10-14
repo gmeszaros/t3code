@@ -332,3 +332,11 @@ including filenames or folders containing `#` or `?`.
 
 On mobile, select a PDF attachment or link to open it. iOS uses the native viewer;
 Android opens a compatible installed file viewer.
+
+## Continue after temporary provider failures
+
+Enable **Continue after temporary provider failure** in Settings > General on web or desktop, or **Continue after temporary failure** in mobile server controls. It is off by default and can be overridden for a project. The server can continue eligible conversations while clients are disconnected. Older servers must be updated before this setting is available.
+
+After a terminal capacity, connection, or service failure, T3 schedules one new turn containing `continue` in the same conversation, with the same provider, model, account configuration, and permission modes. It waits at least 30 seconds, or longer when the provider reports a later retry delay or reset time. The chat shows scheduled, running, cancelled, and exhausted continuation states. If that continuation fails, automatic attempts stop. Sending a message, retrying manually, stopping, archiving, or changing the conversation's provider, model, or modes cancels the pending continuation.
+
+This does not replay the original prompt or restore a checkpoint. It does not handle exhausted quota, billing, authentication, configuration errors, denied approvals, or interruptions, and it does not run alongside an active native retry. It requires reusable saved provider conversation state; native subagents and turns with open background subagents are excluded. App-owned delegated tasks keep their task identity and publish their final outcome after recovery succeeds or is exhausted. Restart recovery and completion-delivery retries have separate limits.

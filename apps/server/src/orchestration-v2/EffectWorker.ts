@@ -27,6 +27,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { continueFailedRun } from "./ProviderFailureContinuation.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -108,6 +109,25 @@ export const layerExecutor: Layer.Layer<
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
+          case "provider-failure.continue": {
+            const sourceRunId = effect.request.sourceRunId;
+            return continueFailedRun({ threadId: effect.threadId, sourceRunId }).pipe(
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+              Effect.tapError(() =>
+                willRetry
+                  ? Effect.void
+                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
@@ -400,6 +420,9 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.decision === undefined
                   ? {}
                   : { decision: effect.request.decision }),
+                ...(effect.request.optionId === undefined
+                  ? {}
+                  : { optionId: effect.request.optionId }),
                 ...(effect.request.answers === undefined
                   ? {}
                   : { answers: effect.request.answers }),

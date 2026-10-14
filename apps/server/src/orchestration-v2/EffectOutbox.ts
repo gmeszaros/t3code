@@ -30,6 +30,10 @@ import { forkParked } from "../serverActivation.ts";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("provider-failure.continue"),
+    sourceRunId: RunId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
   }),
@@ -80,6 +84,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerSessionId: ProviderSessionId,
     requestId: RuntimeRequestId,
     decision: Schema.optional(ProviderApprovalDecision),
+    optionId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   Schema.Struct({
@@ -122,6 +127,7 @@ export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.T
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
+  "provider-failure.continue",
   "provider-session.detach",
   "provider-thread.rollback",
   "checkpoint.capture",
@@ -331,7 +337,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // cannot start while a failed rollback is about to restore files. A claim
     // that skips restart continuations is not blocked by them either.
     // Title generation is correlated metadata work, so it has its own
-    // per-thread lane and cannot delay provider lifecycle effects.
+    // per-thread lane and cannot delay provider lifecycle effects. Delayed failure
+    // offers also have their own lane; the dispatch lock revalidates them so
+    // they never park human work behind the delay.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -366,8 +374,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               )
               OR
               (
-                candidate.effect_type != 'thread-title.generate'
-                AND active.effect_type != 'thread-title.generate'
+                candidate.effect_type = 'provider-failure.continue'
+                AND active.effect_type = 'provider-failure.continue'
+              )
+              OR
+              (
+                candidate.effect_type NOT IN ('thread-title.generate', 'provider-failure.continue')
+                AND active.effect_type NOT IN ('thread-title.generate', 'provider-failure.continue')
               )
             )
         )

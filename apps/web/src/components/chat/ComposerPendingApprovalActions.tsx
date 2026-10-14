@@ -19,6 +19,7 @@ interface ComposerPendingApprovalActionsProps {
   onRespondToApproval: (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    optionId?: string,
   ) => Promise<unknown>;
 }
 
@@ -49,14 +50,14 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
       {primaryOptions.map((option) => {
         const button = (
           <Button
-            key={option.decision}
+            key={option.optionId ?? option.decision}
             size="xs"
             variant={option.decision === "accept" ? "default" : "outline"}
             disabled={disabled || isResponding || !canRespond}
             aria-description={option.warning}
             onClick={() => {
               if (!disabled && !isResponding) {
-                void onRespondToApproval(requestId, option.decision);
+                void onRespondToApproval(requestId, option.decision, option.optionId);
               }
             }}
           >
@@ -65,7 +66,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           </Button>
         );
         return option.warning ? (
-          <Tooltip key={option.decision}>
+          <Tooltip key={option.optionId ?? option.decision}>
             <TooltipTrigger render={button} />
             <TooltipPopup side="top">{option.warning}</TooltipPopup>
           </Tooltip>
@@ -85,12 +86,12 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             {moreOptions.map((option) => {
               const item = (
                 <MenuItem
-                  key={option.decision}
+                  key={option.optionId ?? option.decision}
                   disabled={disabled || isResponding}
                   aria-description={option.warning}
                   onClick={() => {
                     if (!disabled && !isResponding)
-                      void onRespondToApproval(requestId, option.decision);
+                      void onRespondToApproval(requestId, option.decision, option.optionId);
                   }}
                   variant="ghost"
                   className="mb-1 last:mb-0"
@@ -100,7 +101,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                 </MenuItem>
               );
               return option.warning ? (
-                <Tooltip key={option.decision}>
+                <Tooltip key={option.optionId ?? option.decision}>
                   <TooltipTrigger render={item} />
                   <TooltipPopup side="top">{option.warning}</TooltipPopup>
                 </Tooltip>

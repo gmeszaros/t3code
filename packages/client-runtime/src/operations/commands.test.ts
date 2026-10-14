@@ -318,6 +318,79 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect("carries the picked model selection on manual continuation dispatches", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const sourceRunId = RunId.make("run-usage-limit");
+
+      yield* startThreadTurn({
+        commandId: CommandId.make("resume-on-picked-model"),
+        threadId: v2ThreadId,
+        manualContinuationOfRunId: sourceRunId,
+        message: {
+          messageId: MessageId.make("message-continue"),
+          role: "user",
+          text: "Continue where you left off.",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("zai-direct"),
+          model: "glm-5.3",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        dispatchMode: "start",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({
+        type: "message.dispatch",
+        threadId: v2ThreadId,
+        manualContinuationOfRunId: sourceRunId,
+        text: "Continue where you left off.",
+        modelSelection: {
+          instanceId: "zai-direct",
+          model: "glm-5.3",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        dispatchMode: { type: "start_immediately" },
+      });
+      expect(commands[0]).not.toHaveProperty("titleSeed");
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("manual continuation without a selection dispatches no model override", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+
+      yield* startThreadTurn({
+        commandId: CommandId.make("resume-on-thread-model"),
+        threadId: v2ThreadId,
+        manualContinuationOfRunId: RunId.make("run-interrupted"),
+        message: {
+          messageId: MessageId.make("message-continue-thread-model"),
+          role: "user",
+          text: "Continue where you left off.",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        dispatchMode: "start",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({
+        type: "message.dispatch",
+        manualContinuationOfRunId: "run-interrupted",
+        dispatchMode: { type: "start_immediately" },
+      });
+      expect(commands[0]).not.toHaveProperty("modelSelection");
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("preserves an existing worktree and branch during first-message launch", () =>
     Effect.gen(function* () {
       const launches: OrchestrationV2ThreadLaunchInput[] = [];

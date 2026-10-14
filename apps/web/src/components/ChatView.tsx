@@ -1,3 +1,4 @@
+import { providerFailureContinuationText } from "@t3tools/shared/providerFailureContinuation";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -106,6 +107,8 @@ import {
   deriveThreadRuntime,
   presentPendingBackgroundWork,
   presentProviderGoal,
+  latestZCodeTurnUsage,
+  formatZCodeTurnUsage,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { resolvePendingHandoff } from "@t3tools/client-runtime/handoff";
@@ -552,6 +555,7 @@ import {
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
   getAntigravitySendBlockReason,
+  buildManualContinuationTurnInput,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
@@ -1715,6 +1719,22 @@ export default function ChatView(props: ChatViewProps) {
   });
   const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
+  const nativeUsageTurns = serverProjection?.providerTurns;
+  const nativeUsageThreads = serverProjection?.providerThreads;
+  const nativeUsageNodes = serverProjection?.nodes;
+  const nativeUsageRuns = serverProjection?.runs;
+  const nativeTurnUsage = useMemo(
+    () =>
+      nativeUsageTurns && nativeUsageThreads && nativeUsageNodes && nativeUsageRuns
+        ? latestZCodeTurnUsage({
+            providerTurns: nativeUsageTurns,
+            providerThreads: nativeUsageThreads,
+            nodes: nativeUsageNodes,
+            runs: nativeUsageRuns,
+          })
+        : null,
+    [nativeUsageTurns, nativeUsageThreads, nativeUsageNodes, nativeUsageRuns],
+  );
   const reportedModelSelection = serverProjection
     ? deriveReportedModelSelection(serverProjection)
     : null;
@@ -8793,20 +8813,17 @@ export default function ChatView(props: ChatViewProps) {
         const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
         const turnResult = await startThreadTurn({
           environmentId,
-          input: {
+          input: buildManualContinuationTurnInput({
             threadId,
-            manualContinuationOfRunId: resumableRunId,
-            ...(modelSelection ? { modelSelection } : {}),
+            resumableRunId,
+            modelSelection,
             message: {
               messageId: newMessageId(),
-              role: "user",
               text: "Continue where you left off.",
-              attachments: [],
             },
             runtimeMode,
             interactionMode,
-            dispatchMode: "start",
-          },
+          }),
         });
         if (turnResult._tag === "Failure" || !hasHeldQueuedRuns) return turnResult;
         clearUsageLimitsFor(routeThreadKey);
@@ -10227,7 +10244,7 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const onRespondToApproval = useCallback(
-    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
+    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision, optionId?: string) => {
       if (!activeThreadId || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
         return;
       if (
@@ -10245,6 +10262,7 @@ export default function ChatView(props: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           decision,
+          ...(optionId === undefined ? {} : { optionId }),
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -11291,6 +11309,7 @@ export default function ChatView(props: ChatViewProps) {
     ) : null
   ) : null;
   const threadDetailsPanelProps: ThreadDetailsPanelProps = {
+    turnUsageText: formatZCodeTurnUsage(nativeTurnUsage?.usage),
     anchor: threadPanelPopoverAnchorRef,
     handle: threadPanelPopoverHandle,
     onPresentationChange: setThreadPanelPresentation,
@@ -11535,6 +11554,14 @@ export default function ChatView(props: ChatViewProps) {
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
                 onOpenProviderSetup={openProviderSetup}
               />
+              {providerFailureContinuationText(serverRuntime?.automaticContinuation) ? (
+                <div
+                  role="status"
+                  className="pointer-events-auto mx-auto max-w-lg rounded-md bg-background p-3 text-sm"
+                >
+                  {providerFailureContinuationText(serverRuntime?.automaticContinuation)}
+                </div>
+              ) : null}
               <ThreadErrorBanner
                 error={timelineThreadError}
                 errorClass={

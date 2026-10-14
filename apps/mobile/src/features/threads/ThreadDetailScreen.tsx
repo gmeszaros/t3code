@@ -1,6 +1,12 @@
+import { providerFailureContinuationText } from "@t3tools/shared/providerFailureContinuation";
 import { useAtomValue } from "@effect/atom-react";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
+import {
+  latestZCodeTurnUsage,
+  formatZCodeTurnUsage,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { AppText as Text } from "../../components/AppText";
 import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -21,6 +27,7 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationV2ThreadProjection,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
@@ -156,6 +163,10 @@ export interface ThreadDetailScreenProps {
   readonly setupWorkingStartedAt?: string | null;
   readonly canOperateThread: boolean;
   readonly selectedThread: EnvironmentThreadShell;
+  readonly nativeTurnUsageProjection?: Pick<
+    OrchestrationV2ThreadProjection,
+    "providerTurns" | "providerThreads" | "nodes" | "runs"
+  > | null;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
@@ -237,6 +248,7 @@ export interface ThreadDetailScreenProps {
   readonly onRespondToApproval: (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    optionId?: string,
   ) => Promise<unknown>;
   readonly onSelectUserInputOption: (
     requestId: RuntimeRequestId,
@@ -408,6 +420,23 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const controlInsets = deriveBottomControlInsets(nativeMetrics);
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const nativeUsageTurns = props.nativeTurnUsageProjection?.providerTurns;
+  const nativeUsageThreads = props.nativeTurnUsageProjection?.providerThreads;
+  const nativeUsageNodes = props.nativeTurnUsageProjection?.nodes;
+  const nativeUsageRuns = props.nativeTurnUsageProjection?.runs;
+  const nativeTurnUsage = useMemo(
+    () =>
+      nativeUsageTurns && nativeUsageThreads && nativeUsageNodes && nativeUsageRuns
+        ? latestZCodeTurnUsage({
+            providerTurns: nativeUsageTurns,
+            providerThreads: nativeUsageThreads,
+            nodes: nativeUsageNodes,
+            runs: nativeUsageRuns,
+          })
+        : null,
+    [nativeUsageTurns, nativeUsageThreads, nativeUsageNodes, nativeUsageRuns],
+  );
+  const nativeTurnUsageText = formatZCodeTurnUsage(nativeTurnUsage?.usage);
   const childThreadInputs = useChildThreadInputs({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -1294,6 +1323,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       />
                     </Animated.View>
                   ) : null}
+                  {providerFailureContinuationText(
+                    props.selectedThread.runtime?.automaticContinuation,
+                  ) ? (
+                    <View className="px-4 pb-3" accessibilityLiveRegion="polite">
+                      <Text className="text-sm text-foreground">
+                        {providerFailureContinuationText(
+                          props.selectedThread.runtime?.automaticContinuation,
+                        )}
+                      </Text>
+                    </View>
+                  ) : null}
                   <UsageLimitRecoveryCard
                     key={props.selectedThread.latestRun?.runId}
                     thread={props.selectedThread}
@@ -1394,6 +1434,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 A rejected creation has no thread to send to; the failure card
                 owns the slot instead. */}
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
+                  {nativeTurnUsageText ? (
+                    <Text className="px-3 py-1 text-xs text-muted-foreground">
+                      Last ZCode turn: {nativeTurnUsageText}
+                    </Text>
+                  ) : null}
                   {isProviderSubagent ? (
                     <View
                       className="self-center px-3 pt-1.5"

@@ -2343,7 +2343,14 @@ const layerWsRpc = (
                 detail: "This provider does not bank reset credits.",
               });
             }
-            const outcome = yield* instance.consumeResetCredit().pipe(
+            if (input.resetWindowId !== undefined && instance.driverKind !== "zcode") {
+              return yield* new ProviderSetupError({
+                instanceId: input.instanceId,
+                operation: "consume-reset-credit",
+                detail: "This provider does not support window-specific resets.",
+              });
+            }
+            const outcome = yield* instance.consumeResetCredit(input.resetWindowId).pipe(
               Effect.mapError(
                 (error) =>
                   new ProviderSetupError({

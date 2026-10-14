@@ -64,7 +64,7 @@ function layerRuntimeRequestTest(
   );
 }
 
-it.effect("forwards orchestrator-resolved runtime requests to the live adapter", () => {
+it.effect("forwards the exact orchestrator-resolved approval option to the live adapter", () => {
   const threadId = ThreadId.make("thread-runtime-request-resolved");
   const providerSessionId = ProviderSessionId.make("provider-session-runtime-request-resolved");
   const requestId = RuntimeRequestId.make("request-resolved");
@@ -117,6 +117,7 @@ it.effect("forwards orchestrator-resolved runtime requests to the live adapter",
       providerSessionId,
       requestId,
       decision: "accept",
+      optionId: "allow-exact-command",
     });
 
     assert.equal(getSession.mock.calls.length, 1);
@@ -124,6 +125,7 @@ it.effect("forwards orchestrator-resolved runtime requests to the live adapter",
     assert.deepEqual(respondToRuntimeRequest.mock.calls[0]?.[0], {
       requestId,
       decision: "accept",
+      optionId: "allow-exact-command",
     });
   }).pipe(Effect.provide(layerTest));
 });

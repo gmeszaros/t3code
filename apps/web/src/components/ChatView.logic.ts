@@ -16,6 +16,7 @@ import {
   type ProviderInteractionMode,
   ProviderDriverKind,
   type ProviderInstanceId,
+  type RuntimeMode,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
@@ -505,6 +506,36 @@ export function resolveThreadMetadataUpdateForNextTurn(input: {
   return {
     ...(modelSelectionChanged ? { modelSelection: nextModelSelection } : {}),
     ...(branchChanged ? { branch: input.nextBranch, worktreePath: null } : {}),
+  };
+}
+
+/**
+ * The "Continue where you left off" turn carries the composer's current
+ * selection so a continuation resumes on the provider the user just picked
+ * instead of the run that failed. A missing selection (composer gone after the
+ * settings await) omits the field so the server falls back to the thread.
+ */
+export function buildManualContinuationTurnInput(input: {
+  readonly threadId: ThreadId;
+  readonly resumableRunId: RunId;
+  readonly modelSelection: ModelSelection | null | undefined;
+  readonly message: { readonly messageId: MessageId; readonly text: string };
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}) {
+  return {
+    threadId: input.threadId,
+    manualContinuationOfRunId: input.resumableRunId,
+    ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+    message: {
+      messageId: input.message.messageId,
+      role: "user" as const,
+      text: input.message.text,
+      attachments: [],
+    },
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    dispatchMode: "start" as const,
   };
 }
 
