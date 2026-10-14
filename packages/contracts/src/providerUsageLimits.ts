@@ -40,6 +40,16 @@ export const ServerProviderResetCredits = Schema.Struct({
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
+/** Per-window reset inventory. Redemption is explicit rather than inferred from a balance. */
+export const ServerProviderResetCreditWindow = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  availableCount: Schema.NullOr(NonNegativeInt),
+  nextExpiresAt: Schema.optional(IsoDateTime),
+  canRedeem: Schema.optional(Schema.Boolean),
+});
+export type ServerProviderResetCreditWindow = typeof ServerProviderResetCreditWindow.Type;
+
 /**
  * Subscription usage the provider knows about the signed-in account.
  *
@@ -53,6 +63,7 @@ export const ServerProviderUsageLimits = Schema.Struct({
   /** Opaque credential identity when the provider does not report an account. */
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  resetCreditWindows: Schema.optional(Schema.Array(ServerProviderResetCreditWindow)),
   /** Provider-owned usage settings when quota windows are not available to the client. */
   externalUsage: Schema.optional(
     Schema.Struct({
@@ -125,7 +136,10 @@ export type UsageLimitSourceConsumeResetCreditInput =
   typeof UsageLimitSourceConsumeResetCreditInput.Type;
 
 export const ProviderConsumeResetCreditInput = Schema.Union([
-  Schema.Struct({ instanceId: ProviderInstanceId }),
+  Schema.Struct({
+    instanceId: ProviderInstanceId,
+    resetWindowId: Schema.optional(Schema.Literals(["five_hour", "weekly"])),
+  }),
   UsageLimitSourceConsumeResetCreditInput,
 ]);
 export type ProviderConsumeResetCreditInput = typeof ProviderConsumeResetCreditInput.Type;

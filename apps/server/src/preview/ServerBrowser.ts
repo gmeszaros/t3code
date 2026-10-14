@@ -1327,6 +1327,7 @@ const make = Effect.gen(function* () {
         ...profileStatus(),
       };
     }
+    const history = await tab.cdp.send("Page.getNavigationHistory").catch(() => undefined);
     const url = tab.page.url();
     const viewport = tab.page.viewportSize();
     const status = {
@@ -1336,6 +1337,14 @@ const make = Effect.gen(function* () {
       url: url === "about:blank" ? null : url,
       title: null,
       loading: tab.loading,
+      ...(history
+        ? {
+            navigationHistory: {
+              canGoBack: history.currentIndex > 0,
+              canGoForward: history.currentIndex < history.entries.length - 1,
+            },
+          }
+        : {}),
       control: {
         owner: tabOwner(tab),
         ownedByCaller: tab.control.agentId === agentSessionId,
@@ -1684,9 +1693,65 @@ const make = Effect.gen(function* () {
     }
   };
 
+  const nativeExecutions = new Map<
+    string,
+    { agentSessionId: string | undefined; canceled: boolean; released?: boolean }
+  >();
+  const assertRequestActive = (request: PreviewAutomationRequest) => {
+    if (nativeExecutions.get(request.requestId)?.canceled)
+      throw new BrowserControlInterrupted("The browser request was canceled.", "interrupted");
+  };
   const runOperation = async (request: PreviewAutomationRequest): Promise<unknown> => {
+    assertRequestActive(request);
     const input = request.input;
     switch (request.operation) {
+      case "listTabs":
+        return Promise.all(
+          [...tabs.values()]
+            .filter(
+              (tab) =>
+                tab.threadId === request.threadId &&
+                tab.control.agentMayAct(request.agentSessionId!),
+            )
+            .map(async (tab) => ({
+              tabId: tab.tabId,
+              url: tab.page.url(),
+              title: await tab.page.title(),
+              viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
+            })),
+        );
+      case "releaseAgent": {
+        const lifecycle = input as {
+          requestIds: string[];
+          closeSession: boolean;
+          closeTabs: boolean;
+        };
+        for (const id of lifecycle.requestIds) {
+          const execution = nativeExecutions.get(id);
+          if (!execution || execution.agentSessionId === request.agentSessionId)
+            nativeExecutions.set(id, {
+              agentSessionId: request.agentSessionId,
+              canceled: true,
+              released: lifecycle.closeSession,
+            });
+        }
+        const owned = [...tabs.values()].filter(
+          (tab) =>
+            tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId,
+        );
+        if (lifecycle.closeSession)
+          for (const tab of owned) tab.control.interruptAgent(request.agentSessionId!, true);
+        if (lifecycle.closeTabs && owned.some((tab) => tab.control.controller !== null))
+          throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
+        for (const tab of owned) {
+          if (lifecycle.closeTabs && tab.control.controller === null) {
+            void tab.control.close().catch(constVoid);
+            await Effect.runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
+            dropTab(tab, false);
+          }
+        }
+        return {};
+      }
       case "status":
         return statusWithTitle(
           request.tabId === undefined
@@ -1751,12 +1816,16 @@ const make = Effect.gen(function* () {
               }),
             ),
           ));
+        if (nativeExecutions.get(request.requestId)?.released)
+          tab.control.interruptAgent(request.agentSessionId!, true);
+        assertRequestActive(request);
         if (existing?.dialog)
           throw new BrowserControlInterrupted(
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
             "dialogPending",
           );
         return tab.control.agent(request.agentSessionId, async () => {
+          assertRequestActive(request);
           if (tab.dialog)
             throw new BrowserControlInterrupted(
               "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -1768,6 +1837,7 @@ const make = Effect.gen(function* () {
             // Await the original navigation failure even though background creation keeps the tab.
             await tab.initialNavigation;
           }
+          assertRequestActive(request);
           const reveal = open.open ?? open.show;
           if (reveal !== false) {
             await Effect.runPromise(
@@ -1820,6 +1890,7 @@ const make = Effect.gen(function* () {
       }
     }
     const tab = await requireTab(request);
+    assertRequestActive(request);
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
       if (tab.control.agentId !== request.agentSessionId)
@@ -1837,6 +1908,8 @@ const make = Effect.gen(function* () {
     // A click can be waiting for its dialog. Resolve it outside the serial queue,
     // with the same owner check, so the operation can finish and control can drain.
     if (request.operation === "dialog") {
+      if (!tab.control.agentMayAct(request.agentSessionId!))
+        throw new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch");
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
       await resolveDialog(tab, input as PreviewAutomationDialogInput);
@@ -1862,6 +1935,7 @@ const make = Effect.gen(function* () {
       });
     }
     return tab.control.agent(agentSessionId, async () => {
+      assertRequestActive(request);
       if (tab.dialog)
         throw new BrowserControlInterrupted(
           "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -1877,6 +1951,7 @@ const make = Effect.gen(function* () {
   };
 
   const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+    assertRequestActive(request);
     const input = request.input;
     switch (request.operation) {
       case "navigate": {
@@ -1968,7 +2043,21 @@ const make = Effect.gen(function* () {
 
   const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
     Effect.tryPromise({
-      try: () => runOperation(request).finally(() => markUsed(request)),
+      try: async () => {
+        if (!nativeExecutions.has(request.requestId))
+          nativeExecutions.set(request.requestId, {
+            agentSessionId: request.agentSessionId,
+            canceled: false,
+          });
+        try {
+          const result = await runOperation(request);
+          assertRequestActive(request);
+          return result;
+        } finally {
+          nativeExecutions.delete(request.requestId);
+          markUsed(request);
+        }
+      },
       catch: ServerBrowserPage.toOperationError,
     }).pipe(
       Effect.match({

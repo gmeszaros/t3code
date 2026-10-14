@@ -7,6 +7,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  ZCodeSettings,
   DEFAULT_SERVER_SETTINGS,
   requiredScopesForProjectMutation,
   resolveProjectProviderInstanceEnabled,
@@ -1183,4 +1184,38 @@ describe("server model preferences", () => {
       migrateModelPreferences: input,
     });
   });
+});
+
+const decodeZCodeSettings = Schema.decodeUnknownSync(ZCodeSettings);
+
+describe("ZCode app-server settings", () => {
+  it("uses consistent fresh-start enablement and preserves an explicit disable", () => {
+    const instanceId = ProviderInstanceId.make("zcode");
+    const driver = ProviderDriverKind.make("zcode");
+    expect(decodeZCodeSettings({}).enabled).toBe(true);
+    expect(resolveProviderInstanceEnabled({ driver })).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(DEFAULT_SERVER_SETTINGS, null, instanceId)).toBe(
+      true,
+    );
+    expect(resolveProviderInstanceEnabled({ driver, enabled: false })).toBe(false);
+    expect(resolveProviderInstanceEnabled({ driver, config: { enabled: false } })).toBe(false);
+  });
+  it.each(["turn", "app-server"])(
+    "loads saved %s settings without losing instance configuration",
+    (sessionEngine) => {
+      const decoded = decodeZCodeSettings({
+        enabled: true,
+        binaryPath: "/custom/zcode",
+        launchArgs: "--custom-runtime-flag",
+        sessionEngine,
+        customModels: [],
+      });
+      expect(decoded).toMatchObject({
+        enabled: true,
+        binaryPath: "/custom/zcode",
+        launchArgs: "--custom-runtime-flag",
+      });
+      expect(decoded).not.toHaveProperty("sessionEngine");
+    },
+  );
 });

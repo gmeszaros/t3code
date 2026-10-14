@@ -14,6 +14,7 @@ import {
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
+import { OrchestrationV2AutomaticContinuationJson } from "@t3tools/contracts";
 import type {
   OrchestrationV2AppThread,
   OrchestrationV2CheckpointScope,
@@ -653,6 +654,9 @@ export function upsertProviderTurn(
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
+    ...((next.turnTokenUsage ?? current?.turnTokenUsage) === undefined
+      ? {}
+      : { turnTokenUsage: next.turnTokenUsage ?? current?.turnTokenUsage }),
   });
 }
 
@@ -997,6 +1001,7 @@ type ShellThreadRow = {
   readonly latest_run_requested_at: string | null;
   readonly latest_run_started_at: string | null;
   readonly latest_run_completed_at: string | null;
+  readonly automatic_continuation_json: string | null;
   readonly active_run_id: string | null;
   readonly activity_run_status: string | null;
   readonly activity_run_started_at: string | null;
@@ -1053,6 +1058,9 @@ const encodeThreadPayload = Schema.encodeEffect(
 );
 const encodeThreadUpdatedAt = Schema.encodeEffect(
   OrchestrationV2AppThreadJsonSchema.fields.updatedAt,
+);
+const decodeAutomaticContinuation = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2AutomaticContinuationJson),
 );
 const encodeRunPayload = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2RunJsonSchema));
 const encodeRestartCancelledBackgroundWork = Schema.encodeEffect(
@@ -1510,6 +1518,7 @@ export function threadShellFromProjection(
     ...(projection.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
+    automaticContinuation: latestRun?.automaticContinuation ?? null,
     latestRunId: latestRun?.id ?? null,
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
@@ -1620,6 +1629,7 @@ function isActivityRunForShell(
 
 type ShellThreadState = {
   readonly thread: OrchestrationV2ThreadProjection["thread"];
+  readonly automaticContinuation: OrchestrationV2ThreadShell["automaticContinuation"];
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
   readonly latestRunRequestedAt: DateTime.Utc | null;
@@ -1778,6 +1788,7 @@ function shellFromState(input: {
     ...(input.state.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: input.state.thread.historyOrigin }),
+    automaticContinuation: input.state.automaticContinuation,
     latestRunId: input.state.latestRunId,
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
@@ -5271,6 +5282,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               presented.requested_at AS latest_run_requested_at,
               json_extract(presented.payload_json, '$.startedAt') AS latest_run_started_at,
               presented.completed_at AS latest_run_completed_at,
+              json_extract(presented.payload_json, '$.automaticContinuation') AS automatic_continuation_json,
               (
                 SELECT r.run_id
                 FROM orchestration_v2_projection_runs r
@@ -5819,6 +5831,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ];
         return {
           thread,
+          automaticContinuation:
+            row.automatic_continuation_json === null
+              ? null
+              : yield* decodeAutomaticContinuation(row.automatic_continuation_json),
           latestRunId,
           latestRunStatus,
           latestRunRequestedAt,

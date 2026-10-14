@@ -98,10 +98,9 @@ export interface ProviderInstance {
    * re-probe so the snapshot reflects the cleared windows. Account-level,
    * not thread-level, which is why it lives here rather than on the adapter.
    */
-  readonly consumeResetCredit?: () => Effect.Effect<
-    ProviderConsumeResetCreditOutcome,
-    ProviderDriverError
-  >;
+  readonly consumeResetCredit?: (
+    resetWindowId?: "five_hour" | "weekly",
+  ) => Effect.Effect<ProviderConsumeResetCreditOutcome, ProviderDriverError>;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;

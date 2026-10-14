@@ -256,6 +256,9 @@ const mergeProviderModels = (
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
+  // ZCode's prompt inventory is the exact native default. Retaining old rows
+  // or option descriptors would offer selections that this engine rejects.
+  if (provider.driver === ProviderDriverKind.make("zcode")) return nextModels;
   const shouldRetainMissingModels = shouldRetainMissingProviderModels(provider);
   // Custom rows are derived from settings and every snapshot carries the full
   // current list, so a custom model missing from `nextModels` was removed by

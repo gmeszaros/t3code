@@ -13,7 +13,7 @@ export class BrowserControlInterrupted extends Error {
 
 /** Reserves control immediately, but drains running work before the new owner can act. */
 export class SessionControl {
-  readonly agentId: string | null;
+  agentId: string | null;
   private readonly onGenerationChange: () => void;
   private tail: Promise<unknown> = Promise.resolve();
   private pending: Promise<void> = Promise.resolve();
@@ -24,6 +24,14 @@ export class SessionControl {
   constructor(agentId: string | null, onGenerationChange: () => void = () => {}) {
     this.agentId = agentId;
     this.onGenerationChange = onGenerationChange;
+  }
+
+  interruptAgent(agentId: string, release = false) {
+    if (this.agentId !== agentId) return;
+    if (release) this.agentId = null;
+    if (this.owner !== null) return;
+    this.epoch++;
+    this.onGenerationChange();
   }
 
   get controller() {

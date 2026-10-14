@@ -171,3 +171,38 @@ it("ignores custom models that shadow a preferred slug", () => {
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
+
+it("prefers GPT-6.1-Sol and defaults its reasoning to medium", () => {
+  const models = applyPreferredCodexDefaultModel([
+    {
+      slug: "gpt-6-astra",
+      name: "GPT-6-Astra",
+      isCustom: false,
+      isDefault: true,
+      capabilities: null,
+    },
+    { slug: "gpt-6.1-sol", name: "GPT-6.1-Sol", isCustom: false, capabilities: null },
+  ]);
+  assert.equal(models.find((model) => model.isDefault)?.slug, "gpt-6.1-sol");
+  const caps = mapCodexModelCapabilities({
+    id: "gpt-6.1-sol",
+    model: "gpt-6.1-sol",
+    displayName: "GPT-6.1-Sol",
+    description: "Test model",
+    hidden: false,
+    isDefault: true,
+    defaultReasoningEffort: "low",
+    defaultServiceTier: null,
+    additionalSpeedTiers: [],
+    serviceTiers: [],
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low", description: "Low" },
+      { reasoningEffort: "medium", description: "Medium" },
+      { reasoningEffort: "high", description: "High" },
+    ],
+  });
+  assert.equal(
+    caps.optionDescriptors?.find((option) => option.id === "reasoningEffort")?.currentValue,
+    "medium",
+  );
+});

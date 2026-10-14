@@ -402,3 +402,22 @@ describe("findSharedSettingsMismatches", () => {
     expect(mismatches).toEqual([]);
   });
 });
+
+describe("provider failure continuation preference", () => {
+  it("shares explicit opt-in only with supporting environments", () => {
+    const patch = { continueAfterProviderFailure: true, sidebarAutoSettleAfterDays: 7 };
+    expect(splitSharedServerPatch(patch)).toEqual({ sharedPatch: patch, localPatch: {} });
+    expect(filterSharedServerPatch(patch, { threadFailureContinuation: true })).toEqual(patch);
+    for (const capabilities of [undefined, {}, { threadFailureContinuation: false }]) {
+      expect(filterSharedServerPatch(patch, capabilities)).toEqual({
+        sidebarAutoSettleAfterDays: 7,
+      });
+    }
+    expect(
+      filterSharedServerPatch(
+        { continueAfterProviderFailure: false },
+        { threadFailureContinuation: true },
+      ),
+    ).toEqual({ continueAfterProviderFailure: false });
+  });
+});

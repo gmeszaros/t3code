@@ -58,6 +58,7 @@ export interface ThreadRuntimeSummary {
   readonly providerInstanceId: ProviderInstanceId;
   readonly providerName: string | null;
   readonly lastError: string | null;
+  readonly automaticContinuation?: OrchestrationV2ThreadShell["automaticContinuation"];
   readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
   readonly usageLimitResetAt?: string | null;
   readonly updatedAt: string;
@@ -194,6 +195,7 @@ function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary 
     providerInstanceId: thread.providerInstanceId,
     providerName: null,
     lastError: thread.lastError ?? null,
+    automaticContinuation: thread.automaticContinuation ?? null,
     lastErrorClass: thread.lastErrorClass ?? null,
     usageLimitResetAt: thread.usageLimitResetAt ?? null,
     updatedAt: iso(thread.updatedAt),

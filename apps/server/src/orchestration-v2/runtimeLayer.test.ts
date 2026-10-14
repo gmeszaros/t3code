@@ -59,6 +59,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -5194,6 +5195,227 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         }
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
       }),
+  );
+
+  it.effect(
+    "manual continuation honors the picked model selection over the exhausted source provider",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const events = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make("manual-resume:model-switch");
+        const projectId = ProjectId.make("manual-resume:project:model-switch");
+        const now = yield* DateTime.now;
+        const createdAt = DateTime.formatIso(now);
+        yield* seedProject({
+          projectId,
+          title: "Model switch resume",
+          workspaceRoot: process.cwd(),
+          defaultModelSelection: modelSelection,
+          createdAt,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("manual-resume:create:model-switch"),
+          threadId,
+          projectId,
+          title: "Exhausted provider thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("manual-resume:start:model-switch"),
+          threadId,
+          messageId: MessageId.make("manual-resume:start:model-switch"),
+          text: "Start work.",
+          attachments: [],
+          dispatchMode: { type: "defer_start" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("manual-resume:queue:model-switch"),
+          threadId,
+          messageId: MessageId.make("manual-resume:queue:model-switch"),
+          text: "Follow up.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const [source, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+          OrchestrationV2Run,
+          OrchestrationV2Run,
+        ];
+        // A usage-limit failure makes the run manually continuable; the held
+        // queued run waits behind the continuation like the composer's Play
+        // path leaves it.
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make("manual-resume:hold:model-switch"),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...queued, queueHeld: true },
+            },
+            {
+              id: EventId.make("manual-resume:stop:model-switch"),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...source, status: "failed", completedAt: now },
+            },
+            {
+              id: EventId.make("manual-resume:error:model-switch"),
+              type: "turn-item.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: TurnItemId.make("manual-resume:error:model-switch"),
+                type: "error",
+                threadId,
+                runId: source.id,
+                nodeId: source.rootNodeId,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 2,
+                status: "failed",
+                title: "Usage limit reached",
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                failure: {
+                  class: "usage_limit",
+                  message: "Plan limit reached.",
+                  code: "usageLimitExceeded",
+                  retryable: null,
+                  resetAt: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
+                },
+              },
+            },
+          ],
+        });
+        const pickedSelection = {
+          instanceId: alternateInstanceId,
+          model: "gpt-5.5",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        } satisfies ModelSelection;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("manual-resume:continue:model-switch"),
+          threadId,
+          messageId: MessageId.make("manual-resume:continue:model-switch"),
+          manualContinuationOfRunId: source.id,
+          modelSelection: pickedSelection,
+          text: "Continue where you left off.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(after.runs, 3);
+        // The held queued message keeps its enqueue-time binding.
+        assert.equal(after.runs[1]?.status, "queued");
+        assert.isTrue(modelSelectionsEqual(after.runs[1]!.modelSelection, modelSelection));
+        // The continuation lands on the picked provider with the full
+        // selection, including its options.
+        assert.equal(after.runs[2]?.status, "starting");
+        assert.equal(after.runs[2]?.providerInstanceId, alternateInstanceId);
+        assert.isTrue(modelSelectionsEqual(after.runs[2]!.modelSelection, pickedSelection));
+        assert.deepEqual(after.runs[2]?.modelSelection.options, pickedSelection.options);
+        // Switching providers prepares the context handoff from the exhausted
+        // run instead of continuing its provider session.
+        assert.isNotNull(after.runs[2]?.contextHandoffId);
+        assert.equal(after.thread.providerInstanceId, alternateInstanceId);
+        assert.isTrue(modelSelectionsEqual(after.thread.modelSelection, pickedSelection));
+      }),
+  );
+
+  it.effect("manual continuation without a selection keeps the thread's provider", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("manual-resume:model-default");
+      const projectId = ProjectId.make("manual-resume:project:model-default");
+      const now = yield* DateTime.now;
+      const createdAt = DateTime.formatIso(now);
+      yield* seedProject({
+        projectId,
+        title: "Default resume",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection: modelSelection,
+        createdAt,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("manual-resume:create:model-default"),
+        threadId,
+        projectId,
+        title: "Interrupted thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("manual-resume:start:model-default"),
+        threadId,
+        messageId: MessageId.make("manual-resume:start:model-default"),
+        text: "Start work.",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+      ];
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("manual-resume:stop:model-default"),
+            type: "run.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...source, status: "interrupted", completedAt: now },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("manual-resume:continue:model-default"),
+        threadId,
+        messageId: MessageId.make("manual-resume:continue:model-default"),
+        manualContinuationOfRunId: source.id,
+        text: "Continue where you left off.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(after.runs, 2);
+      assert.equal(after.runs[1]?.status, "starting");
+      assert.equal(after.runs[1]?.providerInstanceId, modelSelection.instanceId);
+      assert.isTrue(modelSelectionsEqual(after.runs[1]!.modelSelection, modelSelection));
+      assert.isNull(after.runs[1]?.contextHandoffId);
+      assert.equal(after.thread.providerInstanceId, modelSelection.instanceId);
+    }),
   );
 
   it.effect.each([

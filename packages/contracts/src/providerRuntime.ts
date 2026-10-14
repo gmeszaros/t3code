@@ -330,6 +330,8 @@ export type TurnStartedPayload = typeof TurnStartedPayload.Type;
  */
 const TurnTokenUsageCommonFields = {
   usageScope: Schema.Literal("main_agent"),
+  /** Provider-reported turn total; never a context-window estimate. */
+  totalTokens: Schema.optional(NonNegativeInt),
   cachedInputTokens: Schema.optional(NonNegativeInt),
   cacheCreationTokens: Schema.optional(NonNegativeInt),
   reasoningTokens: Schema.optional(NonNegativeInt),

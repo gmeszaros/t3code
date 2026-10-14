@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type OrchestrationV2ThreadShell,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -131,3 +132,31 @@ export const requireThreadScope = (scope: McpInvocationScope, operation: string)
   scope.thread === undefined
     ? Effect.fail(threadCallerRequired(operation))
     : Effect.succeed(scope as McpThreadInvocationScope);
+
+export function assertLiveThread(
+  scope: McpInvocationScope,
+  caller: OrchestrationV2ThreadShell | undefined,
+) {
+  if (caller === undefined) return Effect.void;
+  return caller.archivedAt !== null ||
+    caller.activeRunId === null ||
+    caller.providerInstanceId !== scope.thread?.providerInstanceId
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling provider no longer owns an active thread run.",
+        }),
+      )
+    : Effect.void;
+}
+
+/** Browser actions cannot implement approval-required or Plan execution by themselves. */
+export const assertPreviewAction = (thread: OrchestrationV2ThreadShell | undefined) =>
+  thread?.interactionMode === "plan" || thread?.runtimeMode !== "full-access"
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Browser actions require a live full-access thread outside Plan mode.",
+        }),
+      )
+    : Effect.void;

@@ -689,6 +689,49 @@ it.layer(
       assert.strictEqual(recovered.workspaceSnapshots?.[0]?.slashCommandsPending, undefined);
     });
 
+    it("replaces cached ZCode models and reasoning options with the authoritative native default", () => {
+      const previousProvider = {
+        instanceId: ProviderInstanceId.make("zcode"),
+        driver: ProviderDriverKind.make("zcode"),
+        status: "ready",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-01T08:00:00.000Z",
+        version: "0.16.9",
+        models: ["GLM-5.3", "GLM-5.3-Flash"].map((model) => ({
+          slug: `account:zai-individual-coding-plan/${model}`,
+          name: model,
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("reasoningLevel", "Reasoning", [{ id: "high", label: "High" }]),
+            ],
+          }),
+        })),
+        slashCommands: [],
+        skills: [],
+      } satisfies ServerProvider;
+      const nextProvider = {
+        ...previousProvider,
+        models: [
+          {
+            ...previousProvider.models[0]!,
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+          },
+        ],
+      } satisfies ServerProvider;
+      assert.deepStrictEqual(
+        ProviderRegistry.mergeProviderSnapshot(previousProvider, nextProvider).models,
+        nextProvider.models,
+      );
+      assert.deepStrictEqual(
+        ProviderRegistry.mergeProviderSnapshot(previousProvider, { ...nextProvider, models: [] })
+          .models,
+        [],
+      );
+    });
+
     it("preserves previously discovered provider models when a refresh returns none", () => {
       const previousProvider = {
         instanceId: ProviderInstanceId.make("cursor"),
@@ -3101,6 +3144,7 @@ it.layer(
               "muse",
               "opencode",
               "pi",
+              "zcode",
             ]);
             assert.strictEqual(cursorProvider?.enabled, false);
             assert.strictEqual(cursorProvider?.status, "disabled");

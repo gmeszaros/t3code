@@ -179,3 +179,29 @@ describe("SessionControl", () => {
     await expect(control.agent("agent-b", async () => "acted")).resolves.toBe("acted");
   });
 });
+
+it("releases a stopped agent and invalidates its queued work without taking human control", async () => {
+  const control = new SessionControl("agent");
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const running = control.agent("agent", async () => {
+    started.resolve();
+    await finish.promise;
+  });
+  await started.promise;
+  const queued = expect(control.agent("agent", async () => "stale mutation")).rejects.toThrow(
+    BrowserControlInterrupted,
+  );
+  control.interruptAgent("foreign", true);
+  expect(control.agentId).toBe("agent");
+  control.interruptAgent("agent", true);
+  expect(control.agentId).toBeNull();
+  finish.resolve();
+  await Promise.all([running, queued]);
+  await control.take("viewer");
+  const generation = control.generation;
+  control.interruptAgent("agent", true);
+  expect(control.controller).toBe("viewer");
+  expect(control.generation).toBe(generation);
+  await expect(control.human("viewer", async () => "human input")).resolves.toBe("human input");
+});

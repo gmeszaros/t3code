@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 
@@ -179,4 +180,21 @@ it.effect("does not keep credentials of other threads alive", () =>
 
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
+);
+
+it.effect("notifies existing revocation waiters and observes revocation before registration", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("revoked"),
+      providerInstanceId: ProviderInstanceId.make("zcode"),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer /, "");
+    const waiting = yield* registry.awaitRevocation(token).pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    yield* registry.revokeProviderSession(issued.config.providerSessionId);
+    yield* Fiber.join(waiting);
+    yield* registry.awaitRevocation(token);
+    expect(yield* registry.resolve(token)).toBeUndefined();
+  }).pipe(Effect.scoped),
 );

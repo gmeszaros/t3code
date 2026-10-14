@@ -34,6 +34,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
+import { nativeUsageFixture } from "../provider/zcode/ZCodeUsage.testkit.ts";
+import { readZCodeTurnUsage } from "../provider/zcode/ZCodeTurnUsage.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -242,6 +244,58 @@ it.effect("records accepted billed turn usage once without billing the context w
     });
   }).pipe(Effect.provide(layerTest.pipe(Layer.provide(layerAnalytics))));
 });
+
+it.effect("persists native ZCode aggregate and unavailable usage without fabricating zero", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const threadEvent = yield* threadCreatedEvent(now);
+    yield* eventSink.write({ events: [threadEvent] });
+    const driver = ProviderDriverKind.make("zcode");
+    const providerInstanceId = ProviderInstanceId.make("zcode-fixture");
+    const providerSessionId = yield* idAllocator.allocate.providerSession({
+      providerInstanceId,
+      threadId: threadEvent.threadId,
+    });
+    const providerThreadId = idAllocator.derive.providerThread({
+      driver,
+      nativeThreadId: "sess_usage",
+    });
+    for (const [index, payload] of [nativeUsageFixture, { tokenCount: 0 }].entries()) {
+      const providerTurn = {
+        id: idAllocator.derive.providerTurn({ driver, nativeTurnId: `native-usage-${index}` }),
+        providerThreadId,
+        nodeId: NodeId.make(`node:usage-${index}`),
+        runAttemptId: null,
+        nativeTurnRef: null,
+        ordinal: index + 1,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+        turnTokenUsage: readZCodeTurnUsage(payload, true),
+      };
+      yield* ingestor.ingestNormalized({
+        providerSessionId,
+        providerInstanceId,
+        threadId: threadEvent.threadId,
+        event: { type: "provider_turn.updated", driver, providerTurn },
+      });
+    }
+    const projection = yield* projectionStore.getThreadProjection(threadEvent.threadId);
+    assert.deepEqual(
+      projection?.providerTurns[0]?.turnTokenUsage,
+      readZCodeTurnUsage(nativeUsageFixture, true),
+    );
+    assert.deepEqual(projection?.providerTurns[1]?.turnTokenUsage, {
+      usageScope: "main_agent",
+      usageStatus: "unavailable",
+      hasSubagents: false,
+    });
+  }).pipe(Effect.provide(layerTest)),
+);
 
 layer("ProviderEventIngestorV2", (it) => {
   it.effect("normalizes provider events through the real event log and projection store", () =>

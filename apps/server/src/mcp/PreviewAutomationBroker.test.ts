@@ -1504,3 +1504,152 @@ it.effect("keeps the host connected when a background status read times out", ()
     }),
   ),
 );
+
+it.effect("native discovery tracks host replacements and refuses the previous generation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const host = makeHost({ supportedOperations: ["status", "releaseAgent"] });
+      const first = yield* broker.connect(host);
+      const connected = yield* Deferred.make<void>();
+      yield* first.pipe(
+        Stream.runForEach((event) =>
+          event.type === "connected" ? Deferred.succeed(connected, undefined) : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(connected);
+      const old = (yield* broker.nativeHosts(scope))[0]!;
+      expect(old.supportedOperations).toEqual(["status", "releaseAgent"]);
+      const second = yield* broker.connect(host);
+      const reconnected = yield* Deferred.make<void>();
+      yield* second.pipe(
+        Stream.runForEach((event) =>
+          event.type === "connected"
+            ? Deferred.succeed(reconnected, undefined)
+            : broker.respond({
+                clientId: host.clientId,
+                connectionId: event.connectionId,
+                requestId: event.request.requestId,
+                ok: true,
+                result: { available: true },
+              }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(reconnected);
+      const current = (yield* broker.nativeHosts(scope))[0]!;
+      expect(current.id).not.toBe(old.id);
+      expect(current.generation).toBeGreaterThan(old.generation);
+      expect(
+        (yield* broker
+          .invoke<void>({ scope, host: old, operation: "status", input: {} })
+          .pipe(Effect.flip))._tag,
+      ).toBe("PreviewAutomationNoAvailableHostError");
+      expect(
+        yield* broker.invoke({ scope, host: current, operation: "status", input: {} }),
+      ).toEqual({ available: true });
+    }),
+  ),
+);
+
+it.effect("refuses a native action whose authority changes before delivery", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const requests = requestsFrom(yield* broker.connect(makeHost()));
+    const delivered: string[] = [];
+    yield* Stream.runForEach(requests, (request) =>
+      Effect.sync(() => {
+        delivered.push(request.requestId);
+      }),
+    ).pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    const result = yield* broker
+      .invoke<void>({
+        scope,
+        operation: "evaluate",
+        input: { expression: "mutate()" },
+        nativeRequestId: "blocked",
+        beforeDispatch: Effect.succeed(false),
+      })
+      .pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(delivered).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("native timeout releases pending browser work before evicting its host", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const host = makeHost({ supportedOperations: ["evaluate", "releaseAgent"] });
+    const events = yield* broker.connect(host);
+    const entered = yield* Deferred.make<string>();
+    const cleanup: PreviewAutomationRequest[] = [];
+    yield* Stream.runForEach(events, (event) => {
+      if (event.type === "connected") return Effect.void;
+      const request = event.request;
+      if (request.operation === "evaluate") return Deferred.succeed(entered, request.requestId);
+      cleanup.push(request);
+      return broker.respond({
+        clientId: host.clientId,
+        connectionId: event.connectionId,
+        requestId: request.requestId,
+        ok: true,
+        result: {},
+      });
+    }).pipe(Effect.forkScoped);
+    const waiting = yield* broker
+      .invoke<void>({
+        scope,
+        operation: "evaluate",
+        input: { expression: "hold()" },
+        nativeRequestId: "timeout",
+        timeoutMs: 100,
+      })
+      .pipe(Effect.result, Effect.forkScoped);
+    const requestId = yield* Deferred.await(entered);
+    yield* TestClock.adjust(10_000);
+    expect(yield* Fiber.join(waiting)).toMatchObject({
+      failure: { _tag: "PreviewAutomationTimeoutError" },
+    });
+    expect(cleanup).toHaveLength(1);
+    expect(cleanup[0]?.input).toEqual({
+      requestIds: [requestId],
+      closeSession: true,
+      closeTabs: false,
+    });
+    expect(yield* broker.nativeHosts(scope)).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("native timeout completes when its host also ignores cleanup", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const host = makeHost({ supportedOperations: ["evaluate", "releaseAgent"] });
+    const events = yield* broker.connect(host);
+    const cleanupEntered = yield* Deferred.make<void>();
+    const cleanup: PreviewAutomationRequest[] = [];
+    yield* Stream.runForEach(events, (event) => {
+      if (event.type === "connected" || event.request.operation === "evaluate") return Effect.void;
+      cleanup.push(event.request);
+      return Deferred.succeed(cleanupEntered, undefined);
+    }).pipe(Effect.forkScoped);
+    const waiting = yield* broker
+      .invoke<void>({
+        scope,
+        operation: "evaluate",
+        input: { expression: "hold()" },
+        nativeRequestId: "timeout-unanswered-cleanup",
+        timeoutMs: 100,
+      })
+      .pipe(Effect.result, Effect.forkScoped);
+    yield* TestClock.adjust(10_000);
+    yield* Deferred.await(cleanupEntered);
+    yield* TestClock.adjust(1_000);
+    expect(yield* Fiber.join(waiting)).toMatchObject({
+      failure: { _tag: "PreviewAutomationTimeoutError" },
+    });
+    expect(cleanup).toHaveLength(1);
+    expect(yield* broker.nativeHosts(scope)).toEqual([]);
+  }).pipe(Effect.scoped),
+);

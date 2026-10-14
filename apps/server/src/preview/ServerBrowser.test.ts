@@ -278,6 +278,40 @@ beforeEach(() => {
   desktopConnections.length = 0;
 });
 
+it.live("reports observed navigation history and omits it when CDP is unavailable", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const cdp = contexts[0]!.sessions.at(-1)!;
+      const send = cdp.send.getMockImplementation()!;
+      cdp.send.mockImplementation(async (method, input) =>
+        method === "Page.getNavigationHistory"
+          ? { currentIndex: 1, entries: [{}, {}, {}] }
+          : send(method, input),
+      );
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status).toHaveProperty("navigationHistory", { canGoBack: true, canGoForward: true });
+      cdp.send.mockImplementation(async (method, input) => {
+        if (method === "Page.getNavigationHistory") throw new Error("CDP unavailable");
+        return send(method, input);
+      });
+      const unavailable = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(unavailable.navigationHistory).toBeUndefined();
+      expect(unavailable.available).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("readiness none responds immediately but takeover input waits for navigation commit", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1565,6 +1599,143 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
       // Without a viewer or agent, the server drives the page again, so its URL keeps reaching clients.
       while (desktopConnections.length < 2) yield* Effect.yieldNow;
       expect(desktopConnections).toHaveLength(2);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("native tab enumeration returns real summaries and isolates another session's tabs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const hosts = yield* broker.nativeHosts(scope);
+      expect(hosts).toHaveLength(1);
+      const host = hosts[0]!;
+      expect(yield* broker.invoke({ scope, host, operation: "listTabs", input: {} })).toEqual([
+        { tabId, url: "about:blank", title: "test page", viewport: { width: 1280, height: 800 } },
+      ]);
+      expect(
+        yield* broker.invoke({
+          scope: asSession("agent-b"),
+          host,
+          operation: "listTabs",
+          input: {},
+        }),
+      ).toEqual([]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "native cancellation invalidates a queued action and reports the running outcome as uncertain",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const host = (yield* broker.nativeHosts(scope))[0]!;
+        const started = Promise.withResolvers<void>();
+        const finish = Promise.withResolvers<Record<string, unknown>>();
+        const session = contexts[0]!.sessions[0]!;
+        session.send.mockImplementationOnce(async () => {
+          started.resolve();
+          return finish.promise;
+        });
+        const running = yield* broker
+          .invoke({
+            scope,
+            host,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "running()" },
+            nativeRequestId: "native-running",
+            nativeTurnId: "turn-a",
+          })
+          .pipe(Effect.forkScoped);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => finish.resolve({ result: { value: "late" } })),
+        );
+        yield* Effect.promise(() => started.promise);
+        const queued = yield* broker
+          .invoke({
+            scope,
+            host,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "mustNotRun()" },
+            nativeRequestId: "native-queued",
+            nativeTurnId: "turn-a",
+          })
+          .pipe(Effect.forkScoped);
+        // The owning broker exposes registration before the browser queue drains.
+        yield* broker.invoke({ scope, host, tabId, operation: "status", input: {} });
+        yield* broker.nativeLifecycle({
+          scope,
+          host,
+          operation: "releaseAgent",
+          input: {},
+          kind: "turnEnded",
+          nativeTurnId: "turn-a",
+        });
+        expect((yield* Fiber.join(running).pipe(Effect.asVoid, Effect.flip))._tag).toBe(
+          "PreviewAutomationControlInterruptedError",
+        );
+        expect((yield* Fiber.join(queued).pipe(Effect.asVoid, Effect.flip))._tag).toBe(
+          "PreviewAutomationControlInterruptedError",
+        );
+        finish.resolve({ result: { value: "late" } });
+        expect(
+          yield* broker.invoke({
+            scope,
+            host,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "nextTurn()" },
+            nativeTurnId: "turn-b",
+          }),
+        ).toBe("evaluated");
+        expect(
+          session.send.mock.calls.filter(
+            ([method, input]) =>
+              method === "Runtime.evaluate" &&
+              (input as { expression: string }).expression === "mustNotRun()",
+          ),
+        ).toEqual([]);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("native session release preserves a human's control and rejects closing their tab", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const host = (yield* broker.nativeHosts(scope))[0]!;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      yield* broker.nativeLifecycle({
+        scope,
+        host,
+        operation: "releaseAgent",
+        input: {},
+        kind: "closeSession",
+      });
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        host,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.control).toMatchObject({ owner: "human", ownedByCaller: false });
+      expect(contexts[0]!.page.close).not.toHaveBeenCalled();
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        yield* broker.invoke({
+          scope: asSession("agent-b"),
+          host,
+          tabId,
+          operation: "evaluate",
+          input: { expression: "resumed()" },
+        }),
+      ).toBe("evaluated");
     }),
   ).pipe(Effect.provide(layer)),
 );

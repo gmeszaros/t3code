@@ -164,7 +164,9 @@ export function mapCodexModelCapabilities(
 ): ModelCapabilities {
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
     reasoningEffort ===
-    (codexModelFamily(model.model) === "gpt-6-astra" ? "medium" : model.defaultReasoningEffort)
+    (["gpt-6-astra", "gpt-6.1-sol"].includes(codexModelFamily(model.model))
+      ? "medium"
+      : model.defaultReasoningEffort)
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),

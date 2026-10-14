@@ -56,6 +56,8 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "hover",
   "select",
   "drag",
+  "releaseAgent",
+  "listTabs",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -92,6 +94,10 @@ export const PreviewAutomationStatus = Schema.Struct({
   url: Schema.NullOr(Schema.String),
   title: Schema.NullOr(Schema.String),
   loading: Schema.Boolean,
+  /** Present when the host can observe both navigation directions. */
+  navigationHistory: Schema.optional(
+    Schema.Struct({ canGoBack: Schema.Boolean, canGoForward: Schema.Boolean }),
+  ),
   control: Schema.optional(
     Schema.Struct({
       owner: PreviewAutomationTabOwner,

@@ -1,6 +1,7 @@
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -42,6 +43,7 @@ export interface McpSessionRegistryShape {
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
+  readonly awaitRevocation: (rawToken: string) => Effect.Effect<void>;
 }
 
 export class McpSessionRegistry extends Context.Service<
@@ -101,6 +103,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
+  const revocationWaiters = new Map<string, Set<Deferred.Deferred<void>>>();
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
   const endpoint = NetAddress.isInetAddress(httpServer.address)
@@ -198,9 +201,39 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   );
 
   const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
-    SynchronizedRef.update(state, ({ records }) => ({
-      records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
-    }));
+    SynchronizedRef.modifyEffect(state, ({ records }) => {
+      const revoked = [...records.values()].filter(predicate);
+      const next = new Map(records);
+      for (const record of revoked) next.delete(record.tokenHash);
+      return Effect.forEach(
+        revoked.flatMap((record) => [...(revocationWaiters.get(record.tokenHash) ?? [])]),
+        (waiter) => Deferred.succeed(waiter, undefined),
+        { discard: true },
+      ).pipe(Effect.as([undefined, { records: next }] as const));
+    });
+
+  const awaitRevocation = (rawToken: string) =>
+    Effect.gen(function* () {
+      const hash = yield* hashToken(rawToken);
+      const waiter = yield* Deferred.make<void>();
+      yield* SynchronizedRef.modifyEffect(state, (current) => {
+        if (!current.records.has(hash))
+          return Deferred.succeed(waiter, undefined).pipe(Effect.as([undefined, current] as const));
+        const waiters = revocationWaiters.get(hash) ?? new Set();
+        waiters.add(waiter);
+        revocationWaiters.set(hash, waiters);
+        return Effect.succeed([undefined, current] as const);
+      });
+      yield* Deferred.await(waiter).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            const waiters = revocationWaiters.get(hash);
+            waiters?.delete(waiter);
+            if (waiters?.size === 0) revocationWaiters.delete(hash);
+          }),
+        ),
+      );
+    });
 
   return McpSessionRegistry.of({
     issue,
@@ -214,7 +247,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
       yield* revokeWhere((record) => record.scope.thread.threadId === threadId);
     }),
-    revokeAll: SynchronizedRef.set(state, { records: new Map() }),
+    revokeAll: revokeWhere(() => true),
+    awaitRevocation,
   });
 });
 

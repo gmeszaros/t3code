@@ -51,6 +51,33 @@ describe("Codex MCP elicitation approvals", () => {
     NodeAssert.equal(describeMcpElicitation(requestWithoutMetadata).appName, "Safari");
   });
 
+  it("handles the empty approval form emitted by native Computer Use", () => {
+    const nativeRequest = {
+      mode: "form",
+      message: "Allow ChatGPT to use T3 Code (Local)?",
+      serverName: "computer-use",
+      threadId: "provider-thread-1",
+      turnId: "turn-1",
+      requestedSchema: { type: "object", properties: {} },
+    } satisfies EffectCodexSchema.McpServerElicitationRequestParams;
+
+    NodeAssert.deepStrictEqual(describeMcpElicitation(nativeRequest), {
+      appName: "T3 Code (Local)",
+      options: [
+        { decision: "cancel", label: "Cancel" },
+        { decision: "decline", label: "Decline" },
+        { decision: "accept", label: "Approve" },
+      ],
+    });
+    NodeAssert.deepStrictEqual(toMcpElicitationResponse(nativeRequest, "accept"), {
+      action: "accept",
+      content: {},
+    });
+    NodeAssert.deepStrictEqual(toMcpElicitationResponse(nativeRequest, "decline"), {
+      action: "decline",
+    });
+  });
+
   it("returns the accepted form option to Codex", () => {
     NodeAssert.deepStrictEqual(toMcpElicitationResponse(request, "accept"), {
       action: "accept",
