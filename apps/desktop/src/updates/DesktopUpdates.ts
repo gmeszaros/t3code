@@ -287,6 +287,10 @@ function createBaseUpdateState(
     ...createInitialDesktopUpdateState(environment.appVersion, environment.runtimeInfo, channel),
     enabled,
     status: enabled ? "idle" : "disabled",
+    message:
+      !enabled && environment.isLocalBuild
+        ? "Automatic updates are unavailable for this local build. Rebuild the app to update."
+        : null,
   };
 }
 

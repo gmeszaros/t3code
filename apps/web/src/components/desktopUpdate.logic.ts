@@ -78,6 +78,8 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
   ) {
     return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
   }
+  if (state.status === "disabled")
+    return state.message ?? "Automatic updates are unavailable for this build.";
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
