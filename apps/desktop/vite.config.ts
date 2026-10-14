@@ -97,7 +97,8 @@ export default defineConfig({
       entry: ["src/boot.ts", "src/compileCache.ts"],
       clean: false,
       deps: {
-        neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
+        neverBundle: (id) =>
+          id === "./main.cjs" || id === "./compileCache.cjs" || id === "../../../package.json",
       },
     },
     {

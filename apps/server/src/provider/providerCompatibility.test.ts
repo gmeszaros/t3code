@@ -103,6 +103,7 @@ describe("provider compatibility", () => {
     const opencode = ProviderDriverKind.make("opencode");
     for (const [version, expected] of [
       ["2.0.18", "supported"],
+      ["2.0.28", "supported"],
       ["2.1.0", "supported"],
       // Early OpenCode 2 releases predate the API the adapter was built against.
       ["2.0.17", "unsupported"],
@@ -111,7 +112,11 @@ describe("provider compatibility", () => {
       ["1.14.19", "graceful"],
       ["1.14.18", "broken"],
     ] as const) {
-      for (const t3CodeVersion of [V2_RELEASE, "0.0.46-preview.20261002.2598"]) {
+      for (const t3CodeVersion of [
+        V2_RELEASE,
+        "0.0.46-preview.20261002.2598",
+        "0.0.46-local.20261014.1",
+      ]) {
         const advisory = resolveProviderCompatibility(
           ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
           opencode,
