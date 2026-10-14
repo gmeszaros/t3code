@@ -1,0 +1,52 @@
+name: Mirror upstream
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out snapshot script
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$SOURCE_REPOSITORY"
+          git fetch --depth=1 --filter=blob:none --no-tags origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/.github/scripts/mirror-upstream.sh'
+          git checkout --detach FETCH_HEAD
+
+      - name: Snapshot upstream main
+        id: mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESTINATION_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git "$DESTINATION_REPOSITORY"
+
+      - name: Mirror summary
+        env:
+          UPSTREAM_SHA: ${{ steps.mirror.outputs.upstream_sha }}
+          CHANGED: ${{ steps.mirror.outputs.changed }}
+        run: |
+          {
+            echo '### Upstream mirror'
+            echo "Revision: ${UPSTREAM_SHA}"
+            echo "Changed: ${CHANGED}"
+            echo 'Upstream main is snapshotted without .github to upstream-snapshot. The custom main branch is unchanged.'
+            echo 'Compare upstream revisions and integrate/test changes before manually running Local desktop build.'
+            echo 'This workflow does not start a macOS build or publish a release.'
+          } >> "$GITHUB_STEP_SUMMARY"

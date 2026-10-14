@@ -1,5 +1,15 @@
 # Local desktop builds on GitHub
 
+## Repository decision (2026-10-14)
+
+Keep `gmeszaros/t3code-local` as a standalone public repository. Its current purpose is a personal Local build with occasional upstream integration. Preserve the existing feature commits, issue, and working build pipeline rather than recreating the repository as a GitHub fork.
+
+A GitHub fork would make the upstream relationship, comparison, synchronization, and upstream pull requests easier to use. It would still require resolving conflicts between upstream changes and the custom implementation. The `.github`-free snapshot workflow remains the chosen synchronization mechanism, with macOS builds started manually.
+
+Revisit this decision if contributing fixes upstream becomes a regular workflow. Existing custom commits and workflows can be transferred without restarting development or migrating the installed app's profile. See [GitHub's fork workflow](https://docs.github.com/en/pull-requests/how-tos/work-with-forks).
+
+## Build and synchronization workflow
+
 The `Local desktop build` workflow builds a self-contained macOS arm64 app on
 the standard `macos-15` runner. It runs only through `workflow_dispatch` and
 uploads a ZIP and build manifest for one day. It does not publish a release,
