@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./providerFailureContinuation": {
+      "types": "./src/providerFailureContinuation.ts",
+      "import": "./src/providerFailureContinuation.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"

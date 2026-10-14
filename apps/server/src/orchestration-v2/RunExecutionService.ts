@@ -48,6 +48,10 @@ import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
 } from "@t3tools/provider-core/server/failure";
+import {
+  continuationConfigurationFingerprint,
+  isTransientTerminalFailure,
+} from "./ProviderFailureContinuation.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 
 export interface ProviderEventRoutingState {
@@ -582,6 +586,9 @@ export const layer: Layer.Layer<
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
+      readonly configurationFingerprint: string | null;
+      readonly appThread: OrchestrationV2AppThread;
+      readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
       readonly rootNode: OrchestrationV2ExecutionNode;
       readonly checkpointScope: OrchestrationV2CheckpointScope;
       readonly providerThread: OrchestrationV2ProviderThread;
@@ -666,8 +673,62 @@ export const layer: Layer.Layer<
         // over a newer acknowledgement, successor, or Stop barrier.
         const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } =
           input.run;
+        // Unreadable settings fail closed: no continuation is scheduled.
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        const enabled =
+          settings !== null &&
+          resolveProjectSettings(settings, input.appThread.projectId).settings
+            .continueAfterProviderFailure;
+        const canContinue =
+          enabled &&
+          settings !== null &&
+          input.configurationFingerprint ===
+            continuationConfigurationFingerprint(settings, input.run.providerInstanceId) &&
+          input.terminal.status === "failed" &&
+          isTransientTerminalFailure(input.terminal.failure, input.terminal.retry) &&
+          input.terminal.threadDisposition === "reusable" &&
+          input.providerThread.ownerNodeId === null &&
+          input.providerThread.nativeThreadRef?.strength === "strong" &&
+          input.providerThread.nativeThreadRef.nativeId != null &&
+          !hasOpenSubagentProjection;
+        const resetAt =
+          input.terminal.status === "failed"
+            ? Date.parse(input.terminal.failure.resetAt ?? "")
+            : NaN;
+        // Minimum 30s delay; provider reset/retry evidence wins when larger.
+        const dueAt = DateTime.makeUnsafe(
+          Math.max(
+            DateTime.toEpochMillis(completedAt) + 30_000,
+            Number.isFinite(resetAt) ? resetAt : 0,
+            DateTime.toEpochMillis(completedAt) +
+              (input.terminal.status === "failed" ? (input.terminal.retry?.retryDelayMs ?? 0) : 0),
+          ),
+        );
+        const automaticContinuation =
+          canContinue && settings !== null
+            ? {
+                status:
+                  input.run.failureContinuationOfRunId === undefined
+                    ? ("scheduled" as const)
+                    : ("exhausted" as const),
+                dueAt,
+                runtimeMode: input.runtimePolicy.runtimeMode,
+                interactionMode: input.runtimePolicy.interactionMode,
+                configurationFingerprint: continuationConfigurationFingerprint(
+                  settings,
+                  input.run.providerInstanceId,
+                ),
+              }
+            : input.run.automaticContinuation !== undefined &&
+                input.run.failureContinuationOfRunId !== undefined &&
+                input.terminal.status === "failed"
+              ? { ...input.run.automaticContinuation, status: "exhausted" as const }
+              : undefined;
+        const { automaticContinuation: _automaticContinuation, ...finalRunSnapshot } =
+          runWithoutDelegatedCompletion;
         const finalizedRun: OrchestrationV2Run = {
-          ...runWithoutDelegatedCompletion,
+          ...finalRunSnapshot,
+          ...(automaticContinuation === undefined ? {} : { automaticContinuation }),
           status: persistedStatus,
           completedAt: input.terminal.status === "completed" ? null : completedAt,
         };
@@ -692,8 +753,22 @@ export const layer: Layer.Layer<
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
-          effects:
-            input.terminal.status === "completed" ||
+          effects: [
+            ...(automaticContinuation?.status === "scheduled"
+              ? [
+                  {
+                    id: `effect:failure-continuation:${input.run.id}`,
+                    commandId: CommandId.make(`command:failure-continuation:${input.run.id}`),
+                    threadId: input.run.threadId,
+                    availableAt: dueAt,
+                    request: {
+                      type: "provider-failure.continue" as const,
+                      sourceRunId: input.run.id,
+                    },
+                  },
+                ]
+              : []),
+            ...(input.terminal.status === "completed" ||
             input.terminal.status === "interrupted" ||
             input.terminal.status === "cancelled"
               ? [
@@ -708,7 +783,8 @@ export const layer: Layer.Layer<
                     },
                   },
                 ]
-              : [],
+              : []),
+          ],
           events: [
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
@@ -822,6 +898,12 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const configurationFingerprint = yield* serverSettings.getSettings.pipe(
+            Effect.map((settings) =>
+              continuationConfigurationFingerprint(settings, input.run.providerInstanceId),
+            ),
+            Effect.orElseSucceed(() => null),
+          );
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
             finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
@@ -895,6 +977,9 @@ export const layer: Layer.Layer<
                 });
                 yield* writeFinalRunEvents({
                   run: input.run,
+                  appThread: input.appThread,
+                  configurationFingerprint,
+                  runtimePolicy: input.runtimePolicy,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
                   providerThread: input.providerThread,
@@ -991,6 +1076,9 @@ export const layer: Layer.Layer<
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
               yield* writeFinalRunEvents({
                 run: input.run,
+                appThread: input.appThread,
+                configurationFingerprint,
+                runtimePolicy: input.runtimePolicy,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
                 providerThread,
@@ -1339,6 +1427,9 @@ export const layer: Layer.Layer<
                                     Effect.flatMap((openSubagents) =>
                                       writeFinalRunEvents({
                                         run: input.run,
+                                        appThread: input.appThread,
+                                        configurationFingerprint,
+                                        runtimePolicy: input.runtimePolicy,
                                         rootNode: input.rootNode,
                                         checkpointScope: input.checkpointScope,
                                         providerThread,
@@ -1451,7 +1542,28 @@ export const layer: Layer.Layer<
                 }),
               ))
             : input.session.startTurn(turnInput);
-          yield* Effect.andThen(shouldStart, startTurn).pipe(
+          const guardedStartTurn =
+            input.run.failureContinuationOfRunId === undefined
+              ? startTurn
+              : Effect.gen(function* () {
+                  const settings = yield* serverSettings.getSettings;
+                  if (
+                    input.run.automaticContinuation?.configurationFingerprint !==
+                    continuationConfigurationFingerprint(settings, input.run.providerInstanceId)
+                  ) {
+                    return yield* Effect.fail(
+                      new ProviderAdapter.ProviderAdapterTurnStartError({
+                        driver: input.session.driver,
+                        threadId: input.run.threadId,
+                        providerThreadId: input.providerThread.id,
+                        runId: input.run.id,
+                        cause: "Provider continuation configuration changed before turn start.",
+                      }),
+                    );
+                  }
+                  yield* startTurn;
+                });
+          yield* Effect.andThen(shouldStart, guardedStartTurn).pipe(
             Effect.catchCause((cause) =>
               Effect.logError("orchestration V2 provider turn start failed", {
                 runId: input.run.id,
@@ -1466,6 +1578,9 @@ export const layer: Layer.Layer<
                         Effect.flatMap((openSubagents) =>
                           writeFinalRunEvents({
                             run: input.run,
+                            appThread: input.appThread,
+                            configurationFingerprint,
+                            runtimePolicy: input.runtimePolicy,
                             rootNode: input.rootNode,
                             checkpointScope: input.checkpointScope,
                             providerThread,
