@@ -2,9 +2,9 @@
 
 ## Repository decision (2026-10-14)
 
-Keep `gmeszaros/t3code-local` as a standalone public shadow repository. Its `upstream/main` branch tracks the original `pingdotgg/t3code` commits and complete trees. Custom `main` contains a linear series of Local commits above that revision. Upstream updates rebase this series automatically without an integration PR.
+Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` identical to upstream. The `local` branch contains the linear Local patch series above `main`. Create feature PRs against `local`, so their diffs contain only the feature changes.
 
-The initial migration replaces the former snapshot and merge history with equivalent Local commits above upstream. Preserve the old published tip under `archive/main-before-auto-rebase-20261014`. Existing tags, releases and the historical `upstream-snapshot` branch remain intact.
+The previous `gmeszaros/t3code-local` repository retains historical releases and branches. The migration leaves the installed app and its profile unchanged. Future builds check releases in this fork.
 
 ## Build, release and synchronization workflow
 
@@ -16,32 +16,35 @@ Use `--output-dir <directory>` to keep artifacts outside the checkout.
 
 ### Local changes and upstream updates
 
-Create feature worktrees from the latest hosted Local `main` and open feature PRs against `main`. These PRs show only their own changes. Merge Local PRs using squash or rebase merge to keep the patch series linear. Merge commits are rejected by the upstream updater.
+Create feature worktrees from the latest hosted `local` and open feature PRs against `local`. Use squash or rebase merge to keep the Local patch series linear.
 
-The weekly `Mirror upstream` job fetches exact upstream history, rebases only commits between the tracked upstream SHA and Local `main`, and atomically updates both branches with explicit `force-with-lease` expectations. It retains the previous Local tip under `local-rebase/<old-main-sha>` tags. Unchanged upstream creates no commit or tag.
+Update the fork's clean `main` with GitHub **Sync fork** or `gh repo sync gmeszaros/t3code --branch main`. This does not require a separate sync token. Keep Local changes off `main`.
 
-Conflicts, divergent upstream history, non-linear Local history, rejected pushes, or concurrent branch updates leave both hosted branches unchanged. For a conflict, fetch both repositories in a clean feature worktree, rebase the Local series onto the new upstream revision, resolve and validate it, then obtain approval for the exact replacement tips before retrying an atomic leased push. Do not merge upstream into Local `main`.
+For a Local update, use a clean worktree and the existing authenticated GitHub CLI. Fetch the fork, record the old `local` tip, and rebase only its Local commits onto the tracked `main`:
 
-After an automatic update, feature branches may need rebasing onto the new Local `main`. For an existing clean checkout, save any work and use `git rebase --onto github/main <previous-local-main> <feature-branch>`. Use the recorded old tip from the sync log or backup tag. This prevents replaying the old Local series as feature changes.
+```bash
+git fetch fork main local
+git switch -c update/local fork/local
+git rebase fork/main
+```
+
+Resolve conflicts and run scoped checks before publication. Preserve the old Local tip in a backup tag and push `HEAD:refs/heads/local` with an explicit `--force-with-lease=refs/heads/local:<old-local-sha>` after approval for that history rewrite. Verify that hosted `main` is an ancestor of hosted `local` and that `main..local` contains no merge commits. No upstream integration PR is needed.
+
+Feature branches based on an older Local tip may need `git rebase --onto fork/local <previous-local-tip> <feature-branch>` after the update. The former scheduled mirror workflow is not used in this fork. Upstream sync and Local rebase remain explicit operations through the existing GitHub authentication.
 
 The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 
 The `Local desktop build` workflow builds a self-contained macOS arm64 app on
 the standard `macos-15` runner. It runs only through `workflow_dispatch` and
-uploads a ZIP and build manifest for one day. The optional **Publish release** input publishes a verified manual-download release when building `main`. Branch builds never publish. The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire.
+uploads a ZIP and build manifest for one day. The optional **Publish release** input publishes a verified manual-download release when building `local`. Branch builds never publish. The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire.
 
-Add the workflow to your own GitHub repository's default branch, then select
-**Actions > Local desktop build > Run workflow** and choose the branch to build. To publish, select `main` and enable **Publish release**. After packaging verification, the workflow uploads the ZIP and manifest to a draft release and publishes it as latest. An existing tag is never overwritten.
+The workflow lives on `local` so default `main` stays identical to upstream. GitHub requires manually dispatched workflows to exist on the default branch, so this fork does not currently support dispatching the Local build through Actions. Use `node scripts/build-local-desktop.mjs` locally. Release publication is a separately approved operation. See [GitHub manual workflow requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow). After packaging verification, the workflow uploads the ZIP and manifest to a draft release and publishes it as latest. An existing tag is never overwritten.
 When importing a fork, review its inherited workflows before enabling Actions;
 upstream release workflows are not configured for this personal build.
 
-Enable only `Local desktop build` and `Mirror upstream` in the personal repository. The updater runs every Monday at 07:17 UTC and can also run manually. It does not build or release the app. Keep inherited upstream workflows disabled.
+Keep inherited upstream workflows disabled. The Local workflow definition is retained for a future explicit CI setup. Leave `main` unchanged and use local packaging until that setup is approved.
 
-Configure repository secret `UPSTREAM_SYNC_TOKEN` with a workflow-capable credential restricted to this repository. A fine-grained token needs Contents and Workflows write access. The updater stops before mutation if the secret is missing. The built-in `GITHUB_TOKEN` is insufficient for reliable synchronization of complete upstream workflow history. See [GitHub token permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
-
-For an approved manual run, the locally authenticated `gh` credential can run `bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git https://github.com/gmeszaros/t3code-local.git`. This command also rewrites Local `main` and requires approval for that operation.
-
-The Linux job needs no dependencies, caches or artifacts. The macOS job runs only on demand. GitHub schedules may be delayed, and public scheduled workflows may need re-enabling after 60 days without repository activity.
+No scheduled credential or `UPSTREAM_SYNC_TOKEN` is configured for this fork. Native fork synchronization and locally authenticated rebasing replace the former standalone mirror updater.
 
 The downloaded Actions artifact contains an app ZIP. Extract that ZIP, keep
 the previous app for rollback, and install `T3 Code (Local).app`. The manifest

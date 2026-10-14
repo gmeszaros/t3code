@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish a verified Local release for manual downloads (main only)"
+        description: "Publish a verified Local release for manual downloads (local branch only)"
         type: boolean
         default: false
 
@@ -87,7 +87,7 @@ jobs:
   publish:
     name: Publish verified Local release
     needs: build
-    if: inputs.publish_release && github.ref == 'refs/heads/main'
+    if: inputs.publish_release && github.ref == 'refs/heads/local'
     runs-on: ubuntu-latest
     permissions:
       contents: write

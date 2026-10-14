@@ -79,7 +79,7 @@ describe("Local manual release checks", () => {
         const result = yield* updates.check("manual");
         expect(result.checked).toBe(true);
         expect(String(fetch.mock.calls[0]?.[0])).toBe(
-          "https://api.github.com/repos/gmeszaros/t3code-local/releases/latest",
+          "https://api.github.com/repos/gmeszaros/t3code/releases/latest",
         );
         expect(result.state.status).toBe("available");
         expect(result.state.availableVersion).toBe("0.0.46-local.4.1");
