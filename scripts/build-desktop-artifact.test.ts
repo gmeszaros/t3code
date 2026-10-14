@@ -387,6 +387,44 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("packages Local builds with isolated identity and hardened ad-hoc signing", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "zip",
+        "0.0.45-local.1",
+        false,
+        true,
+        3000,
+        undefined,
+        false,
+        "arm64",
+        true,
+      );
+      assert.equal(config.appId, "com.t3tools.t3code.local");
+      assert.equal(config.productName, "T3 Code (Local)");
+      assert.notProperty(config, "publish");
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(mac.identity, "-");
+      assert.equal(mac.hardenedRuntime, true);
+      assert.equal(mac.notarize, false);
+      assert.equal(mac.entitlements, mac.entitlementsInherit);
+      assert.deepStrictEqual(mac.protocols, [{ name: "T3 Code", schemes: ["t3code-local"] }]);
+      assert.include(
+        (mac.extendInfo as Record<string, string>).NSAppleEventsUsageDescription,
+        "control applications",
+      );
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: { GITHUB_REPOSITORY: "owner/fork" },
+          }),
+        ),
+      ),
+    ),
+  );
+
   it("stages only the desktop main-process externals", () => {
     assert.deepStrictEqual(
       resolveDesktopRuntimeDependencies(
@@ -1973,6 +2011,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.include(entitlements, "<key>com.apple.security.automation.apple-events</key>");
     assert.notInclude(entitlements, "keychain-access-groups");
     assert.notInclude(entitlements, "com.apple.developer.web-browser.public-key-credential");
   });
@@ -2138,6 +2177,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const mac = config.mac as Record<string, unknown>;
       assert.equal(config.appId, "com.t3tools.t3code");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
+      assert.property(mac.extendInfo, "NSAppleEventsUsageDescription");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
       assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
       assert.deepStrictEqual(mac.protocols, [

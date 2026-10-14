@@ -1,0 +1,121 @@
+name: Local desktop build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a verified Local release for manual downloads (local branch only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS arm64 Local
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      T3_LOCAL_BUILD: "1"
+      T3CODE_DESKTOP_SIGNED: "false"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out public build source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$SOURCE_REPOSITORY"
+          git fetch --filter=blob:none --no-tags origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Verify Local packaging contracts
+        run: |
+          vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts
+
+      - name: Build and verify self-contained Local app
+        run: node scripts/build-local-desktop.mjs
+
+      - name: Upload Local build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: t3code-local-macos-arm64-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            release-local/*.zip
+            release-local/*.build.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo '### T3 Code (Local), macOS arm64'
+            echo "Source: ${GITHUB_SHA}"
+            echo "Integrated upstream: ${T3CODE_INTEGRATED_UPSTREAM_SHA}"
+            echo 'Download the artifact and extract its app zip. Keep the previous app for rollback.'
+            echo 'Ad-hoc signed with hardened runtime and Apple Events entitlements; not notarized.'
+            echo 'Native GUI consent/CUA and entitlement-gated passkeys require acceptance on the destination Mac.'
+            echo 'Local checks GitHub Releases and opens manual downloads; it never installs updates automatically.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish verified Local release
+    needs: build
+    if: inputs.publish_release && github.ref == 'refs/heads/local'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: t3code-local-macos-arm64-${{ github.run_number }}-${{ github.run_attempt }}
+          path: release-local
+
+      - name: Publish manual-download release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          manifest=(release-local/*.build.json)
+          test "${#manifest[@]}" -eq 1
+          version="$(jq -r '.version' "${manifest[0]}")"
+          tag="v${version}"
+          test "$(jq -r '.sourceSha' "${manifest[0]}")" = "$GITHUB_SHA"
+          cat > release-notes.md <<'EOF'
+          T3 Code (Local) for macOS Apple Silicon.
+
+          Download the ZIP, close T3 Code (Local), keep the previous app for rollback, and replace it with the extracted app. Your existing Local profile is reused. The app checks this repository for newer releases and opens the download page; installation remains manual.
+
+          The build manifest records the source revision and ZIP checksum. This build is ad-hoc signed and is not notarized. macOS may require launch approval or renewed privacy consent.
+          EOF
+          gh release create "$tag" release-local/*.zip release-local/*.build.json --draft --target "$GITHUB_SHA" --title "T3 Code (Local) ${version}" --notes-file release-notes.md
+          gh release edit "$tag" --draft=false --latest

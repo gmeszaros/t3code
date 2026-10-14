@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream";
 
 import type { DesktopUpdates } from "./DesktopUpdates.ts";
 
-const RELEASE_API = "https://api.github.com/repos/gmeszaros/t3code-local/releases/latest";
+const RELEASE_API = "https://api.github.com/repos/gmeszaros/t3code/releases/latest";
 const LOCAL_VERSION = /^(\d+)\.(\d+)\.(\d+)-local\.(\d+)\.(\d+)$/;
 
 export function newerLocalRelease(payload: unknown, currentVersion: string): string | null {
