@@ -142,6 +142,7 @@ import {
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  getDesktopUpdateReleaseUrl,
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "./desktopUpdate.logic";
@@ -2952,7 +2953,7 @@ function SortableProjectItem({
 interface SidebarProjectsContentProps {
   showArm64IntelBuildWarning: boolean;
   arm64IntelBuildWarningDescription: string | null;
-  desktopUpdateButtonAction: "download" | "install" | "none";
+  desktopUpdateButtonAction: "download" | "install" | "release" | "none";
   desktopUpdateButtonDisabled: boolean;
   desktopUpdateActionPending: boolean;
   handleDesktopUpdateButtonClick: () => void;
@@ -3085,9 +3086,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                   disabled={desktopUpdateButtonDisabled || desktopUpdateActionPending}
                   onClick={handleDesktopUpdateButtonClick}
                 >
-                  {desktopUpdateButtonAction === "download"
-                    ? "Download ARM build"
-                    : "Install ARM build"}
+                  {desktopUpdateButtonAction === "release"
+                    ? "Open Local release"
+                    : desktopUpdateButtonAction === "download"
+                      ? "Download ARM build"
+                      : "Install ARM build"}
                 </Button>
               </AlertAction>
             ) : null}
@@ -3745,6 +3748,25 @@ export default function LegacySidebar() {
     }
 
     setDesktopUpdateActionPending(true);
+
+    if (desktopUpdateButtonAction === "release") {
+      const url = getDesktopUpdateReleaseUrl(desktopUpdateState.availableVersion);
+      try {
+        if (url && !(await bridge.openExternal(url)))
+          throw new Error("Could not open Local release.");
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not open release",
+            description: error instanceof Error ? error.message : "Could not open Local release.",
+          }),
+        );
+      } finally {
+        setDesktopUpdateActionPending(false);
+      }
+      return;
+    }
 
     if (desktopUpdateButtonAction === "download") {
       void bridge

@@ -35,6 +35,7 @@ import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
+import * as LocalReleaseUpdates from "./LocalReleaseUpdates.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -354,6 +355,24 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+
+  if (environment.isLocalBuild && environment.isPackaged && !environment.isDevelopment) {
+    return yield* LocalReleaseUpdates.make(
+      {
+        ...createInitialDesktopUpdateState(
+          environment.appVersion,
+          environment.runtimeInfo,
+          "latest",
+        ),
+        enabled: !config.disableAutoUpdate,
+        status: config.disableAutoUpdate ? "disabled" : "idle",
+        message: config.disableAutoUpdate
+          ? "Local release checks are disabled by T3CODE_DISABLE_AUTO_UPDATE."
+          : null,
+      },
+      (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
+    );
+  }
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());

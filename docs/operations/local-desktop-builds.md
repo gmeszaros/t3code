@@ -8,15 +8,14 @@ A GitHub fork would make the upstream relationship, comparison, synchronization,
 
 Revisit this decision if contributing fixes upstream becomes a regular workflow. Existing custom commits and workflows can be transferred without restarting development or migrating the installed app's profile. See [GitHub's fork workflow](https://docs.github.com/en/pull-requests/how-tos/work-with-forks).
 
-## Build and synchronization workflow
+## Build, release and synchronization workflow
 
 The `Local desktop build` workflow builds a self-contained macOS arm64 app on
 the standard `macos-15` runner. It runs only through `workflow_dispatch` and
-uploads a ZIP and build manifest for one day. It does not publish a release,
-install an app, or configure automatic updates.
+uploads a ZIP and build manifest for one day. The optional **Publish release** input publishes a verified manual-download release when building `main`. Branch builds never publish. The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire.
 
 Add the workflow to your own GitHub repository's default branch, then select
-**Actions > Local desktop build > Run workflow** and choose the branch to build.
+**Actions > Local desktop build > Run workflow** and choose the branch to build. To publish, select `main` and enable **Publish release**. After packaging verification, the workflow uploads the ZIP and manifest to a draft release and publishes it as latest. An existing tag is never overwritten.
 When importing a fork, review its inherited workflows before enabling Actions;
 upstream release workflows are not configured for this personal build.
 

@@ -35,6 +35,29 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
+  it("opens Local release downloads without offering automated installation", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      currentVersion: "0.0.46-local.3.1",
+      availableVersion: "0.0.46-local.4.1",
+      status: "available",
+    };
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("release");
+    expect(getDesktopUpdateButtonTooltip(state)).toContain("open the release");
+    expect(getDesktopUpdateReleaseUrl(state.availableVersion)).toBe(
+      "https://github.com/gmeszaros/t3code-local/releases/tag/v0.0.46-local.4.1",
+    );
+    expect(getDesktopUpdateReleaseHistoryUrl(state.currentVersion)).toBe(
+      "https://github.com/gmeszaros/t3code-local/releases",
+    );
+    expect(
+      resolveDesktopUpdateButtonAction({
+        ...state,
+        status: "downloaded",
+        downloadedVersion: state.availableVersion,
+      }),
+    ).toBe("none");
+  });
   it("shows a download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,
