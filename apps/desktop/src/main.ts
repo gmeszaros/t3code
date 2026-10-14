@@ -55,6 +55,7 @@ import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
 import * as DesktopSavedEnvironments from "./settings/DesktopSavedEnvironments.ts";
 import * as DesktopSnapShot from "./snapShot/DesktopSnapShot.ts";
+import * as DesktopComputerService from "./computer/DesktopComputerService.ts";
 import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
@@ -193,6 +194,7 @@ const layerDesktopAppActivation = DesktopAppActivation.layer.pipe(
 // WSL second instance gets registered later in the migration. See
 // DesktopBackendPool.ts header for the full rollout plan.
 const layerDesktopBackend = DesktopBackendPool.layer.pipe(
+  Layer.provideMerge(DesktopComputerService.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(DesktopWslEnvironment.layer),

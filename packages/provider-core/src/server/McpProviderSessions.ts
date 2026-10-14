@@ -19,20 +19,58 @@ export class McpProviderSessions extends Context.Service<
     readonly set: (config: McpProviderSessionConfig) => Effect.Effect<void>;
     readonly read: (threadId: ThreadId) => Effect.Effect<McpProviderSessionConfig | undefined>;
     readonly clear: (threadId: ThreadId) => Effect.Effect<void>;
+    /**
+     * Observes credential revocations: replacing a session with a different
+     * `providerSessionId`, or clearing one, notifies once with the revoked
+     * session. Listener failures never prevent provider cleanup.
+     */
+    readonly subscribeRevocations: (
+      listener: (session: McpProviderSessionConfig) => void,
+    ) => Effect.Effect<() => void>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}
 
 const make = Effect.gen(function* () {
   const sessions = yield* Ref.make(new Map<ThreadId, McpProviderSessionConfig>());
+  const revocationListeners = new Set<(session: McpProviderSessionConfig) => void>();
+  const notifyRevoked = (session: McpProviderSessionConfig): void => {
+    for (const listener of revocationListeners) {
+      try {
+        listener(session);
+      } catch {
+        /* Revocation must not prevent provider cleanup. */
+      }
+    }
+  };
   return McpProviderSessions.of({
     set: (config) =>
-      Ref.update(sessions, (current) => new Map(current).set(config.threadId, config)),
+      Ref.modify(sessions, (current) => {
+        const previous = current.get(config.threadId);
+        const next = new Map(current).set(config.threadId, config);
+        const notify =
+          previous !== undefined && previous.providerSessionId !== config.providerSessionId
+            ? () => notifyRevoked(previous)
+            : undefined;
+        return [notify, next] as const;
+      }).pipe(Effect.flatMap((notify) => (notify ? Effect.sync(notify) : Effect.void))),
     read: (threadId) => Ref.get(sessions).pipe(Effect.map((current) => current.get(threadId))),
     clear: (threadId) =>
-      Ref.update(sessions, (current) => {
+      Ref.modify(sessions, (current) => {
+        const previous = current.get(threadId);
         const next = new Map(current);
         next.delete(threadId);
-        return next;
+        return [previous, next] as const;
+      }).pipe(
+        Effect.flatMap((previous) =>
+          previous !== undefined ? Effect.sync(() => notifyRevoked(previous)) : Effect.void,
+        ),
+      ),
+    subscribeRevocations: (listener) =>
+      Effect.sync(() => {
+        revocationListeners.add(listener);
+        return () => {
+          revocationListeners.delete(listener);
+        };
       }),
   });
 });

@@ -40,6 +40,9 @@ import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
+import * as ComputerTools from "./toolkits/computer/tools.ts";
+import * as DesktopComputerClient from "./DesktopComputerClient.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import {
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
@@ -878,4 +881,10 @@ export const layer = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  // Hand-registered tools: the computer bridge resolves the invoking thread
+  // per request from McpInvocationContext, so it registers directly.
+  ComputerTools.registration.pipe(
+    Layer.provide(DesktopComputerClient.layer),
+    Layer.provide(McpProviderSessions.layer),
+  ),
 ).pipe(Layer.provideMerge(layerMcpTransport));

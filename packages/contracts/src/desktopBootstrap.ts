@@ -35,6 +35,8 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   /** Server -> desktop: commands for those tabs. */
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
+  desktopComputerResponseFd: Schema.optionalKey(PositiveInt),
+  desktopComputerRequestFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
 });
 

@@ -38,6 +38,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as DesktopComputerService from "../computer/DesktopComputerService.ts";
 import { HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -465,11 +466,28 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   const onOutput = options.onOutput ?? (() => Effect.void);
   const bootstrapStream = Stream.encodeText(Stream.make(`${bootstrapJson}\n`));
   const additionalFds: Record<`fd${number}`, ChildProcess.AdditionalFdConfig> = {};
+  const computerService = yield* Effect.serviceOption(
+    DesktopComputerService.DesktopComputerService,
+  );
+  const computer =
+    options.bootstrapDelivery === "fd3" &&
+    options.bootstrap.desktopComputerResponseFd !== undefined &&
+    options.bootstrap.desktopComputerRequestFd !== undefined &&
+    Option.isSome(computerService)
+      ? yield* computerService.value.connect
+      : undefined;
   if (options.bootstrapDelivery === "fd3") {
     additionalFds.fd3 = {
       type: "input",
       stream: bootstrapStream,
     };
+    if (computer) {
+      additionalFds[`fd${options.bootstrap.desktopComputerResponseFd!}`] = {
+        type: "input",
+        stream: computer.responses,
+      };
+      additionalFds[`fd${options.bootstrap.desktopComputerRequestFd!}`] = { type: "output" };
+    }
     if (options.bootstrap.desktopTelemetryFd !== undefined) {
       additionalFds[`fd${options.bootstrap.desktopTelemetryFd}`] = {
         type: "input",
@@ -524,6 +542,15 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     ),
   );
   const outputFibers: Array<Fiber.Fiber<void, never>> = [];
+
+  if (computer) {
+    yield* handle.getOutputFd(options.bootstrap.desktopComputerRequestFd!).pipe(
+      Stream.runForEach((bytes) => Effect.sync(() => computer.receive(bytes))),
+      Effect.catchCause(() => Effect.void),
+      Effect.ensuring(Effect.sync(() => computer.close())),
+      Effect.forkScoped,
+    );
+  }
 
   yield* options.onStarted?.(handle.pid) ?? Effect.void;
   if (

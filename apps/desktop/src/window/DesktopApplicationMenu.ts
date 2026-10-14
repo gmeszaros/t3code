@@ -12,6 +12,7 @@ import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+import * as DesktopComputerService from "../computer/DesktopComputerService.ts";
 
 export class DesktopApplicationMenuActionError extends Schema.TaggedError<DesktopApplicationMenuActionError>()(
   "DesktopApplicationMenuActionError",
@@ -115,6 +116,7 @@ const handleCheckForUpdatesMenuClick = Effect.gen(function* () {
 export const make = Effect.gen(function* () {
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const computer = yield* Effect.serviceOption(DesktopComputerService.DesktopComputerService);
   const context = yield* Effect.context<DesktopApplicationMenuRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
 
@@ -193,6 +195,38 @@ export const make = Effect.gen(function* () {
       {
         label: "File",
         submenu: [
+          ...(Option.isSome(computer)
+            ? [
+                {
+                  label: "Computer Access Status...",
+                  click: () =>
+                    runMenuEffect(
+                      "computer-access-status",
+                      Effect.gen(function* () {
+                        const grant = yield* computer.value.status;
+                        const dialog = yield* ElectronDialog.ElectronDialog;
+                        yield* dialog.showMessageBox({
+                          type: "info",
+                          title: "Computer access",
+                          message: grant
+                            ? `${grant.readOnly ? "Viewing" : "Controlling"} ${grant.application}`
+                            : "No active computer access",
+                          detail: grant
+                            ? "Use Stop Computer Access to revoke this session's access immediately."
+                            : "Each session needs your approval before accessing an application.",
+                          buttons: ["OK"],
+                        });
+                      }),
+                    ),
+                },
+                {
+                  label: "Stop Computer Access",
+                  accelerator: "CmdOrCtrl+Shift+Escape",
+                  click: () => runMenuEffect("stop-computer-access", computer.value.stop),
+                },
+                { type: "separator" as const },
+              ]
+            : []),
           ...(environment.platform === "darwin"
             ? []
             : [

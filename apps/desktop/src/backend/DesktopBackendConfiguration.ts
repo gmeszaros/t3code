@@ -577,6 +577,11 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       desktopTelemetryControlFd: 5,
       desktopBrowserFd: 6,
       desktopBrowserControlFd: 7,
+      // The server's computer bridge reads the pair numbers back from the
+      // bootstrap payload, so the values only need to stay collision-free.
+      ...(environment.platform === "darwin"
+        ? { desktopComputerResponseFd: 8, desktopComputerRequestFd: 9 }
+        : {}),
       ...Option.match(input.resourceMonitorPath, {
         onNone: () => ({}),
         onSome: (resourceMonitorPath) => ({ resourceMonitorPath }),

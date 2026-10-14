@@ -719,6 +719,8 @@ const layerMakeRoutes = Layer.mergeAll(
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    // The computer bridge reads archived-thread state per invocation.
+    Layer.provide(ProjectionStoreV2.layer),
   ),
 ).pipe(
   // Guides read through the same pull request service as every other surface.

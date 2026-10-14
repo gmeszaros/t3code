@@ -100,6 +100,8 @@ export class ServerConfig extends Context.Service<
     readonly desktopTelemetryControlFd?: number | undefined;
     readonly desktopBrowserFd?: number | undefined;
     readonly desktopBrowserControlFd?: number | undefined;
+    readonly desktopComputerResponseFd?: number | undefined;
+    readonly desktopComputerRequestFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;

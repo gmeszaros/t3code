@@ -23,6 +23,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import * as DesktopComputerService from "../computer/DesktopComputerService.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopApp from "../app/DesktopApp.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
@@ -196,6 +197,64 @@ function makeTestInstance(input: MakeInstanceInput) {
 }
 
 describe("DesktopBackendManager", () => {
+  it.effect("routes computer requests on separate inherited pipes and revokes on EOF", () =>
+    Effect.gen(function* () {
+      const received = Promise.withResolvers<void>();
+      let closed = false;
+      const bytes = new TextEncoder().encode("computer-request");
+      let responses = "";
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (command._tag !== "StandardCommand")
+              return yield* Effect.die("Expected standard command");
+            const fd6 = command.options.additionalFds?.fd6;
+            assert.equal(fd6?.type, "input");
+            assert.equal(command.options.additionalFds?.fd7?.type, "output");
+            if (fd6?.type === "input" && fd6.stream)
+              responses = yield* fd6.stream.pipe(Stream.decodeText(), Stream.mkString);
+            return makeProcess({
+              getOutputFd: (fd) => (fd === 7 ? Stream.make(bytes) : Stream.empty),
+              exitCode: Effect.promise(() => received.promise).pipe(
+                Effect.as(ChildProcessSpawner.ExitCode(0)),
+              ),
+            });
+          }),
+        ),
+      );
+      const computer = {
+        stop: Effect.void,
+        status: Effect.succeed(undefined),
+        connect: Effect.succeed({
+          responses: Stream.make(new TextEncoder().encode("computer-response")),
+          receive: (chunk: Uint8Array) => {
+            assert.deepEqual(chunk, bytes);
+            received.resolve();
+          },
+          close: () => {
+            closed = true;
+          },
+        }),
+      };
+      yield* DesktopBackendManager.runBackendProcess({
+        ...baseConfig,
+        bootstrap: {
+          ...baseConfig.bootstrap,
+          desktopComputerResponseFd: 6,
+          desktopComputerRequestFd: 7,
+        },
+        desktopTelemetryStream: Stream.empty,
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(DesktopComputerService.DesktopComputerService, computer),
+        Effect.provide(Layer.merge(spawnerLayer, layerHealthyHttpClient)),
+      );
+      assert.equal(responses, "computer-response");
+      assert.isTrue(closed);
+    }),
+  );
+
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {
