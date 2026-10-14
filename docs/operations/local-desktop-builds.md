@@ -2,13 +2,25 @@
 
 ## Repository decision (2026-10-14)
 
-Keep `gmeszaros/t3code-local` as a standalone public repository. Its current purpose is a personal Local build with occasional upstream integration. Preserve the existing feature commits, issue, and working build pipeline rather than recreating the repository as a GitHub fork.
+Keep `gmeszaros/t3code-local` as a standalone public shadow repository. Its `upstream/main` branch mirrors the original `pingdotgg/t3code` commits and complete trees. The custom `main` preserves Local changes and integrates upstream through merge commits. GitHub fork conversion is unnecessary for this history model.
 
-A GitHub fork would make the upstream relationship, comparison, synchronization, and upstream pull requests easier to use. It would still require resolving conflicts between upstream changes and the custom implementation. The `.github`-free snapshot workflow remains the chosen synchronization mechanism, with macOS builds started manually.
-
-Revisit this decision if contributing fixes upstream becomes a regular workflow. Existing custom commits and workflows can be transferred without restarting development or migrating the installed app's profile. See [GitHub's fork workflow](https://docs.github.com/en/pull-requests/how-tos/work-with-forks).
+Existing published commits, tags and releases remain intact. The initial ancestry repair merges the already-integrated upstream revision without changing source files. The old `upstream-snapshot` branch remains a historical reference and is no longer updated.
 
 ## Build, release and synchronization workflow
+
+Local packaging and CI use the same command: `node scripts/build-local-desktop.mjs`.
+It assigns one UTC date-and-time version, aligns package versions, builds the ZIP,
+verifies the signature and shipped backend, and writes the checksum manifest.
+Package versions and a temporary public `.env` are restored on success or failure.
+Use `--output-dir <directory>` to keep artifacts outside the checkout.
+
+### Upstream integration
+
+Start in a clean feature worktree based on the current Local `main`. Fetch the original upstream history and merge it with `git merge --no-ff upstream/main`. Review workflow conflicts explicitly so Local build settings survive. Inspect the diff, run scoped checks, and prepare a draft PR against Local `main`.
+
+After publication approval, merge the PR with `gh pr merge --merge`. **Use a merge commit for upstream integration. Squash and rebase merges discard the ancestry this repository preserves.** Verify that the integrated upstream SHA is an ancestor of the final hosted `main`. `git log main..upstream/main` lists pending upstream commits, and `git diff upstream/main...main` shows the Local delta after integration.
+
+The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed branch, PR merge and release. Install only after active runs finish.
 
 The `Local desktop build` workflow builds a self-contained macOS arm64 app on
 the standard `macos-15` runner. It runs only through `workflow_dispatch` and
@@ -19,25 +31,13 @@ Add the workflow to your own GitHub repository's default branch, then select
 When importing a fork, review its inherited workflows before enabling Actions;
 upstream release workflows are not configured for this personal build.
 
-Enable only `Local desktop build` and `Mirror upstream` in the personal
-repository. The snapshot job checks upstream main every Monday at 07:17 UTC
-and can also run manually. It copies upstream source without the entire
-`.github` directory into a separate `upstream-snapshot` branch, recording the
-original SHA in each commit's `Upstream-Commit` trailer. Snapshot commits have
-new identities and their own linear history; they are not upstream commits.
-Use the recorded revisions to compare and integrate upstream changes into the
-custom branch, then test before manually building it. Do not merge snapshot
-history as if it were the original upstream history.
+Enable only `Local desktop build` and `Mirror upstream` in the personal repository. The mirror job checks upstream main every Monday at 07:17 UTC and can also run manually. It fast-forwards `upstream/main` to the exact original SHA, including `.github`. It leaves custom `main` unchanged and does not build or release the app.
 
-Unchanged upstream revisions create no commit. Divergent or backwards upstream
-history stops without changing the snapshot. The job does not force-push,
-change custom `main`, start a macOS build, or publish a release. It uses the
-built-in `GITHUB_TOKEN` with Contents write access; no separate token or secret
-is needed because no upstream workflow files are copied. Keep all inherited
-upstream workflows disabled. The Linux job needs no dependencies, caches or
-artifacts; the macOS job runs only on demand. GitHub schedules may be delayed,
-and public scheduled workflows are disabled after 60 days without repository
-activity and may need re-enabling.
+Unchanged revisions create no commit. Divergent or backwards upstream history stops without updating the mirror. Pushes never use force. Keep inherited upstream workflows disabled.
+
+The scheduled job uses the built-in `GITHUB_TOKEN` with Contents write access. GitHub can reject a push that introduces workflow-file changes without workflow-write authorization. If that happens, leave the mirror unchanged and run the same script with an approved workflow-capable GitHub credential. Do not replace original commits with filtered snapshots. The locally authenticated `gh` credential can run `bash .github/scripts/mirror-upstream.sh https://github.com/pingdotgg/t3code.git https://github.com/gmeszaros/t3code-local.git` after approval for the remote update.
+
+The Linux job needs no dependencies, caches or artifacts. The macOS job runs only on demand. GitHub schedules may be delayed, and public scheduled workflows may need re-enabling after 60 days without repository activity.
 
 The downloaded Actions artifact contains an app ZIP. Extract that ZIP, keep
 the previous app for rollback, and install `T3 Code (Local).app`. The manifest

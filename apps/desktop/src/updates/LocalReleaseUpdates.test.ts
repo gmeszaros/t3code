@@ -32,6 +32,18 @@ const initial = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Local manual release checks", () => {
+  it("orders date-and-time builds after legacy builds and across midnight", () => {
+    expect(newerLocalRelease(release("0.0.46-local.20261014.172500"), initial.currentVersion)).toBe(
+      "0.0.46-local.20261014.172500",
+    );
+    expect(
+      newerLocalRelease(release("0.0.46-local.20261015.5"), "0.0.46-local.20261014.235959"),
+    ).toBe("0.0.46-local.20261015.5");
+    expect(
+      newerLocalRelease(release("0.0.46-local.20261014.172500"), "0.0.46-local.20261014.172501"),
+    ).toBeNull();
+  });
+
   it("compares numeric builds and excludes older, incomplete and preview releases", () => {
     expect(newerLocalRelease(release("0.0.46-local.10.1"), initial.currentVersion)).toBe(
       "0.0.46-local.10.1",

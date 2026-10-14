@@ -29,7 +29,7 @@ function fixture(t) {
   NodeFS.mkdirSync(NodePath.join(upstream, ".github", "workflows"), { recursive: true });
   NodeFS.writeFileSync(
     NodePath.join(upstream, ".github", "workflows", "ci.yml"),
-    "name: Excluded workflow\n",
+    "name: Preserved workflow\n",
   );
   NodeFS.writeFileSync(NodePath.join(upstream, "source.txt"), "Upstream source\n");
   git(upstream, "add", ".");
@@ -52,41 +52,40 @@ function fixture(t) {
   return { root, upstream, destination, initial, customSha, older, output, run };
 }
 
-test("creates filtered snapshots, advances only their branch, and skips unchanged upstream", (t) => {
+test("mirrors exact upstream commits and workflows without changing Local history", (t) => {
   const f = fixture(t);
   const initialRun = f.run();
   NodeAssert.equal(initialRun.status, 0, initialRun.stderr);
   const latest = git(f.upstream, "rev-parse", "HEAD");
-  const first = git(f.destination, "rev-parse", "upstream-snapshot");
-  NodeAssert.notEqual(first, latest);
-  NodeAssert.equal(git(f.destination, "ls-tree", first, ".github"), "");
-  NodeAssert.equal(git(f.destination, "show", `${first}:source.txt`), "Upstream source");
-  NodeAssert.match(
-    git(f.destination, "log", "-1", "--format=%B", first),
-    new RegExp(`Upstream-Commit: ${latest}`),
+  const first = git(f.destination, "rev-parse", "upstream/main");
+  NodeAssert.equal(first, latest);
+  NodeAssert.equal(
+    git(f.destination, "show", `${first}:.github/workflows/ci.yml`),
+    "name: Preserved workflow",
   );
-  NodeAssert.equal(git(f.destination, "rev-list", "--count", first), "1");
+  NodeAssert.equal(git(f.destination, "show", `${first}:source.txt`), "Upstream source");
+  NodeAssert.equal(git(f.destination, "rev-list", "--count", first), "2");
   NodeAssert.equal(git(f.destination, "rev-parse", "main"), f.customSha);
   NodeAssert.match(NodeFS.readFileSync(f.output, "utf8"), /changed=true/);
   git(f.upstream, "commit", "--allow-empty", "-m", "Another upstream update");
   NodeAssert.equal(f.run().status, 0);
-  const second = git(f.destination, "rev-parse", "upstream-snapshot");
+  const second = git(f.destination, "rev-parse", "upstream/main");
   NodeAssert.equal(git(f.destination, "rev-parse", `${second}^`), first);
-  NodeAssert.equal(git(f.destination, "ls-tree", second, ".github"), "");
-  NodeAssert.match(
-    git(f.destination, "log", "-1", "--format=%B", second),
-    new RegExp(`Upstream-Commit: ${git(f.upstream, "rev-parse", "HEAD")}`),
+  NodeAssert.equal(second, git(f.upstream, "rev-parse", "HEAD"));
+  NodeAssert.equal(
+    git(f.destination, "show", `${second}:.github/workflows/ci.yml`),
+    "name: Preserved workflow",
   );
   NodeAssert.equal(f.run().status, 0);
   NodeAssert.match(NodeFS.readFileSync(f.output, "utf8"), /changed=false/);
-  NodeAssert.equal(git(f.destination, "rev-parse", "upstream-snapshot"), second);
+  NodeAssert.equal(git(f.destination, "rev-parse", "upstream/main"), second);
   NodeAssert.equal(git(f.destination, "rev-parse", "main"), f.customSha);
 });
 
 test("preserves the mirror when upstream diverges or moves backwards", (t) => {
   const f = fixture(t);
   NodeAssert.equal(f.run().status, 0);
-  const mirrored = git(f.destination, "rev-parse", "upstream-snapshot");
+  const mirrored = git(f.destination, "rev-parse", "upstream/main");
   const divergent = NodePath.join(f.root, "divergent");
   NodeFS.mkdirSync(divergent);
   git(divergent, "init", "-b", "main");
@@ -94,8 +93,19 @@ test("preserves the mirror when upstream diverges or moves backwards", (t) => {
   const failed = f.run(divergent);
   NodeAssert.notEqual(failed.status, 0);
   NodeAssert.match(failed.stderr, /history diverged or moved backwards/);
-  NodeAssert.equal(git(f.destination, "rev-parse", "upstream-snapshot"), mirrored);
+  NodeAssert.equal(git(f.destination, "rev-parse", "upstream/main"), mirrored);
   NodeAssert.notEqual(f.run(f.older).status, 0);
-  NodeAssert.equal(git(f.destination, "rev-parse", "upstream-snapshot"), mirrored);
+  NodeAssert.equal(git(f.destination, "rev-parse", "upstream/main"), mirrored);
   NodeAssert.equal(git(f.destination, "rev-parse", "main"), f.customSha);
+});
+
+test("preserves the historical snapshot branch during migration", (t) => {
+  const f = fixture(t);
+  git(f.destination, "update-ref", "refs/heads/upstream-snapshot", f.customSha);
+  NodeAssert.equal(f.run().status, 0);
+  NodeAssert.equal(git(f.destination, "rev-parse", "upstream-snapshot"), f.customSha);
+  NodeAssert.equal(
+    git(f.destination, "rev-parse", "upstream/main"),
+    git(f.upstream, "rev-parse", "HEAD"),
+  );
 });

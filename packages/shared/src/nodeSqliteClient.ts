@@ -173,7 +173,7 @@ const classifyError = (cause: unknown, message: string, operation: string) => {
  */
 const LARGE_BINDING_SIZE = 64 * 1024;
 
-// `node:sqlite` binds both buffer views and raw buffers as blobs.
+// Treat buffer views and raw buffers as payloads rather than named parameters.
 const isBlob = (value: unknown): value is ArrayBufferView | ArrayBufferLike =>
   ArrayBuffer.isView(value) || NodeUtil.types.isAnyArrayBuffer(value);
 

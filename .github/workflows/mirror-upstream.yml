@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out snapshot script
+      - name: Check out mirror script
         shell: bash
         env:
           SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
@@ -29,7 +29,7 @@ jobs:
           git sparse-checkout set --no-cone '/.github/scripts/mirror-upstream.sh'
           git checkout --detach FETCH_HEAD
 
-      - name: Snapshot upstream main
+      - name: Mirror original upstream main
         id: mirror
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,7 +46,7 @@ jobs:
             echo '### Upstream mirror'
             echo "Revision: ${UPSTREAM_SHA}"
             echo "Changed: ${CHANGED}"
-            echo 'Upstream main is snapshotted without .github to upstream-snapshot. The custom main branch is unchanged.'
-            echo 'Compare upstream revisions and integrate/test changes before manually running Local desktop build.'
+            echo 'upstream/main retains the original upstream commits and complete trees, including .github. The custom main branch is unchanged.'
+            echo 'Integrate upstream with a merge commit; never squash or rebase that merge in the pull request.'
             echo 'This workflow does not start a macOS build or publish a release.'
           } >> "$GITHUB_STEP_SUMMARY"

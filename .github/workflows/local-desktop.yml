@@ -53,34 +53,12 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
 
-      - name: Record revisions and configure public services
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = arm64
-          git fetch --no-tags https://github.com/pingdotgg/t3code.git main
-          upstream_sha="$(git merge-base HEAD FETCH_HEAD)"
-          echo "T3CODE_INTEGRATED_UPSTREAM_SHA=$upstream_sha" >> "$GITHUB_ENV"
-          release_metadata="$(node scripts/resolve-nightly-release.ts --date "$(date -u +%Y%m%d)" --run-number "$GITHUB_RUN_NUMBER" --sha "$GITHUB_SHA")"
-          base_version="$(printf '%s\n' "$release_metadata" | sed -n 's/^base_version=//p')"
-          test -n "$base_version"
-          build_version="${base_version}-local.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
-          node scripts/update-release-package-versions.ts "$build_version"
-          echo "T3CODE_DESKTOP_VERSION=$build_version" >> "$GITHUB_ENV"
-          cp .env.example .env
-
       - name: Verify Local packaging contracts
         run: |
           vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts
 
-      - name: Build self-contained Local app
-        run: node scripts/build-desktop-artifact.ts --platform mac --arch arm64 --target zip --output-dir release-local
-
-      - name: Verify artifact and write build manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/verify-local-desktop-artifact.mjs release-local/*.zip "$GITHUB_SHA"
+      - name: Build and verify self-contained Local app
+        run: node scripts/build-local-desktop.mjs
 
       - name: Upload Local build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
