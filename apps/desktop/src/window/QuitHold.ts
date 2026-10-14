@@ -6,7 +6,7 @@ import type { QuitConfirmationMode, QuitShortcutHintEvent } from "@t3tools/contr
 // before the native menu accelerator. Quitting from the application menu is
 // untouched and always quits immediately.
 export const QUIT_HOLD_DURATION_MS = 1200;
-export const QUIT_DOUBLE_PRESS_MS = 500;
+export const QUIT_DOUBLE_PRESS_MS = 1000;
 // "Still held" is proven by auto-repeat keydowns, not by the absence of a
 // release: macOS suppresses a letter keyUp while the command key is down, so a
 // tap release can go completely unseen and a release-based timer would quit
