@@ -34,33 +34,29 @@ Feature branches based on an older Local tip may need `git rebase --onto fork/lo
 
 The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 
-The `Local desktop build` workflow builds a self-contained macOS arm64 app on
-the standard `macos-15` runner. It runs only through `workflow_dispatch` and
-uploads a ZIP and build manifest for one day. The optional **Publish release** input publishes a verified manual-download release when building `local`. Branch builds never publish. The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire.
+The `Local desktop build` workflow builds and verifies a self-contained macOS arm64 app on the standard `macos-15` runner. Push a `v<base>-local.<UTC-date>.<UTC-time>` tag pointing to a merged commit on `local` to build that exact version. The workflow uploads the ZIP and manifest to a draft release, then publishes it as latest. No local packaging or manual asset upload is required. Existing releases are never overwritten.
 
-The workflow lives on `local` so default `main` stays identical to upstream. GitHub requires manually dispatched workflows to exist on the default branch, so this fork does not currently support dispatching the Local build through Actions. Use `node scripts/build-local-desktop.mjs` locally. Release publication is a separately approved operation. See [GitHub manual workflow requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow). After packaging verification, the workflow uploads the ZIP and manifest to a draft release and publishes it as latest. An existing tag is never overwritten.
-When importing a fork, review its inherited workflows before enabling Actions;
-upstream release workflows are not configured for this personal build.
+The tag trigger uses the workflow from the tagged commit, so `main` stays identical to upstream. The optional `workflow_dispatch` entry remains for a future default-branch setup; GitHub cannot dispatch it manually while the file only exists on `local`. The inherited upstream release workflow excludes Local tags.
+
+The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire; the workflow's intermediate artifact is retained for one day.
 
 ### Publishing a verified Local release
 
-Merge the reviewed feature PR into `local`, then build its exact merged revision in a clean worktree:
+Merge the reviewed feature PR into `local` and choose a new Local version. After approving publication, tag the exact merged source and push only that tag:
 
 ```bash
-node scripts/build-local-desktop.mjs --output-dir release-local
+git fetch fork local
+git tag "v<version>" fork/local
+git push fork "refs/tags/v<version>"
 ```
 
-The output contains `T3-Code-Local-<version>-arm64.zip` and the matching `.build.json`. Read `version` and `sourceSha` from that manifest. After approving the release notes and publication, use those values below; upload both files before making the release public:
+Follow **Actions > Local desktop build**. Download the app ZIP from the resulting GitHub release. Both the tag and the source revision must pass the workflow's checks before publication. The manifest records the source revision and ZIP checksum. The workflow uses GitHub's short-lived token; no personal API key, signing credential or workstation profile is needed.
 
-```bash
-gh release create "v<version>" --repo gmeszaros/t3code --target "<sourceSha>" --title "T3 Code Local <version>" --draft --notes-file release-notes.md
-gh release upload "v<version>" "release-local/T3-Code-Local-<version>-arm64.zip" "release-local/T3-Code-Local-<version>-arm64.build.json" --repo gmeszaros/t3code
-gh release edit "v<version>" --repo gmeszaros/t3code --draft=false --latest
-```
+Local packaging remains available as a fallback with `node scripts/build-local-desktop.mjs --output-dir release-local`. If publishing that output manually, upload both the versioned ZIP and its `.build.json` to a draft release targeting the manifest's `sourceSha`, then publish it as latest.
 
 Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
-Keep inherited upstream workflows disabled. The Local workflow definition is retained for a future explicit CI setup. Leave `main` unchanged and use local packaging until that setup is approved.
+Keep unrelated inherited upstream workflows disabled. Enable the reviewed Local workflow when publishing its setup; leave `main` unchanged. The Local workflow does not use the upstream Blacksmith runner labels.
 
 No scheduled credential or `UPSTREAM_SYNC_TOKEN` is configured for this fork. Native fork synchronization and locally authenticated rebasing replace the former standalone mirror updater.
 
