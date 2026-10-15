@@ -1,4 +1,4 @@
-import * as NodeTest from "node:test";
+import { it } from "vite-plus/test";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -36,21 +36,18 @@ function fixture(run) {
   }
 }
 
-NodeTest.test(
-  "merges upstream while retaining Local commit identities without changing either published branch",
-  () =>
-    fixture((f) => {
-      const result = mergeLocalUpdate(f);
-      NodeAssert.equal(f.git("rev-parse", "local"), f.localSha);
-      NodeAssert.equal(f.git("rev-parse", "main"), f.upstreamSha);
-      NodeAssert.equal(f.git("show", `${result}:feature`), "local feature");
-      NodeAssert.equal(f.git("show", `${result}:upstream`), "upstream change");
-      NodeAssert.equal(f.git("rev-parse", `${result}^`), f.localSha);
-      NodeAssert.equal(f.git("rev-parse", `${result}^2`), f.upstreamSha);
-    }),
-);
+it("merges upstream while retaining Local commit identities without changing either published branch", () =>
+  fixture((f) => {
+    const result = mergeLocalUpdate(f);
+    NodeAssert.equal(f.git("rev-parse", "local"), f.localSha);
+    NodeAssert.equal(f.git("rev-parse", "main"), f.upstreamSha);
+    NodeAssert.equal(f.git("show", `${result}:feature`), "local feature");
+    NodeAssert.equal(f.git("show", `${result}:upstream`), "upstream change");
+    NodeAssert.equal(f.git("rev-parse", `${result}^`), f.localSha);
+    NodeAssert.equal(f.git("rev-parse", `${result}^2`), f.upstreamSha);
+  }));
 
-NodeTest.test("conflicts abort and restore the original detached source", () =>
+it("conflicts abort and restore the original detached source", () =>
   fixture((f) => {
     const localSha = f.commit("shared", "local conflict\n");
     f.git("switch", "main");
@@ -59,28 +56,25 @@ NodeTest.test("conflicts abort and restore the original detached source", () =>
     NodeAssert.throws(() => mergeLocalUpdate({ ...f, localSha, upstreamSha }));
     NodeAssert.equal(f.git("rev-parse", "HEAD"), localSha);
     NodeAssert.equal(f.git("status", "--porcelain"), "");
-  }),
-);
+  }));
 
-NodeTest.test("rejects downgrades and unchanged upstream", () =>
+it("rejects downgrades and unchanged upstream", () =>
   fixture((f) => {
     NodeAssert.throws(() =>
       mergeLocalUpdate({ ...f, baseSha: f.upstreamSha, upstreamSha: f.baseSha }),
     );
     NodeAssert.throws(() => mergeLocalUpdate({ ...f, upstreamSha: f.baseSha }), /No newer/);
     NodeAssert.equal(f.git("rev-parse", "HEAD"), f.localSha);
-  }),
-);
+  }));
 
-NodeTest.test("preserves dirty work", () =>
+it("preserves dirty work", () =>
   fixture((f) => {
     NodeFS.writeFileSync(NodePath.join(f.cwd, "untracked"), "keep");
     NodeAssert.throws(() => mergeLocalUpdate(f), /clean/);
     NodeAssert.equal(f.git("status", "--porcelain"), "?? untracked");
-  }),
-);
+  }));
 
-NodeTest.test("candidate bundle transports the exact source without executing it", () =>
+it("candidate bundle transports the exact source without executing it", () =>
   fixture((f) => {
     const result = mergeLocalUpdate(f);
     f.git("update-ref", "refs/heads/update-candidate", result);
@@ -89,10 +83,9 @@ NodeTest.test("candidate bundle transports the exact source without executing it
     f.git("-C", "verification", "fetch", "../source.bundle", "refs/heads/update-candidate");
     NodeAssert.equal(f.git("-C", "verification", "rev-parse", "FETCH_HEAD"), result);
     f.git("-C", "verification", "merge-base", "--is-ancestor", f.upstreamSha, result);
-  }),
-);
+  }));
 
-NodeTest.test("previous Local merges remain intact during the next update", () =>
+it("previous Local merges remain intact during the next update", () =>
   fixture((f) => {
     f.git("switch", "-c", "side", f.localSha);
     f.commit("side", "side change\n");
@@ -104,5 +97,4 @@ NodeTest.test("previous Local merges remain intact during the next update", () =
     f.git("merge-base", "--is-ancestor", localSha, result);
     NodeAssert.equal(f.git("show", `${result}:side`), "side change");
     NodeAssert.equal(f.git("show", `${result}:mainline`), "mainline change");
-  }),
-);
+  }));
