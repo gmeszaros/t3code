@@ -13,11 +13,12 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVerticalIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "./ui/button";
+import { cn } from "~/lib/utils";
 
 /** One order for pointer dragging and Space/arrow-key/Space keyboard sorting. */
 export function SortableOrder(props: {
@@ -33,7 +34,7 @@ export function SortableOrder(props: {
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
-      modifiers={[restrictToVerticalAxis]}
+      modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
       onDragEnd={({ active, over }) => {
         if (!over || active.id === over.id) return;
         const from = props.ids.indexOf(String(active.id));
@@ -68,7 +69,10 @@ export function SortableOrderItem(props: {
   return (
     <div
       ref={setNodeRef}
-      className="relative flex min-w-0 items-center"
+      className={cn(
+        "relative flex min-w-0 items-center",
+        isDragging && "rounded-sm bg-popover shadow-sm ring-1 ring-border",
+      )}
       style={{
         transform: CSS.Translate.toString(transform),
         transition,

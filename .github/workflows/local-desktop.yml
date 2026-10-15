@@ -1,6 +1,9 @@
 name: Local desktop build
 
 on:
+  push:
+    tags:
+      - "v*-local.*"
   workflow_dispatch:
     inputs:
       publish_release:
@@ -13,7 +16,7 @@ permissions:
 
 concurrency:
   group: local-desktop-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -37,6 +40,17 @@ jobs:
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git checkout --detach FETCH_HEAD
 
+      - name: Verify release tag belongs to the Local branch
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          LOCAL_RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$LOCAL_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-local\.[0-9]+\.[0-9]+$ ]]
+          git fetch --filter=blob:none --no-tags origin local
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
@@ -55,10 +69,24 @@ jobs:
 
       - name: Verify Local packaging contracts
         run: |
-          vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts
+          vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/updates/LocalReleaseUpdates.test.ts
+
+      - name: Verify Local update link and favorite reordering
+        working-directory: apps/web
+        run: vp test run src/components/desktopUpdate.logic.test.ts src/components/SortableOrder.test.tsx src/components/chat/ModelPickerContent.test.ts src/components/chat/ProviderModelPicker.test.tsx --project unit
 
       - name: Build and verify self-contained Local app
-        run: node scripts/build-local-desktop.mjs
+        shell: bash
+        env:
+          LOCAL_RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" == "push" ]]; then
+            node scripts/build-local-desktop.mjs --version "${LOCAL_RELEASE_TAG#v}"
+          else
+            node scripts/build-local-desktop.mjs
+          fi
 
       - name: Upload Local build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -87,7 +115,7 @@ jobs:
   publish:
     name: Publish verified Local release
     needs: build
-    if: inputs.publish_release && github.ref == 'refs/heads/local'
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (inputs.publish_release && github.ref == 'refs/heads/local')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -110,6 +138,9 @@ jobs:
           version="$(jq -r '.version' "${manifest[0]}")"
           tag="v${version}"
           test "$(jq -r '.sourceSha' "${manifest[0]}")" = "$GITHUB_SHA"
+          archive="$(jq -r '.archive' "${manifest[0]}")"
+          [[ "$archive" == "T3-Code-Local-${version}-arm64.zip" ]]
+          printf '%s  %s\n' "$(jq -r '.sha256' "${manifest[0]}")" "release-local/${archive}" | sha256sum --check
           cat > release-notes.md <<'EOF'
           T3 Code (Local) for macOS Apple Silicon.
 
