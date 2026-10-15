@@ -40,6 +40,38 @@ The tag trigger uses the workflow from the tagged commit, so `main` stays identi
 
 The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire; the workflow's intermediate artifact is retained for one day.
 
+### Preparing an upstream integration in Actions
+
+`Local upstream update` is the first stage of the upstream update pipeline. Run it
+against `local`, select an upstream release tag (or leave it empty for the latest
+published nightly), and leave `publish_release` off for an artifact-only trial.
+The workflow rejects older or unchanged upstream bases, non-linear Local history,
+and rebase conflicts. Stable and preview releases are excluded from automatic selection. An explicit
+release tag remains available for controlled trials; downgrade checks still apply.
+
+The candidate replays the Local patch series in a disposable checkout, runs scoped
+integration tests and typechecks, then builds and verifies the macOS arm64 app.
+The artifact includes the ZIP, checksum manifest and a Git bundle of the exact
+candidate source. Build steps have read-only repository permissions.
+
+With `publish_release` enabled, a separate job verifies the candidate and checksum,
+checks that `local` has not moved, and publishes an immutable `updates/local-*`
+branch and a latest Local release. It never force-pushes or updates `main` or
+`local`. A failed build publishes nothing. Publication failures can leave an
+immutable candidate branch, tag or draft release for inspection; inspect those
+before retrying. Existing releases are never overwritten.
+
+Before continuing development from a published candidate, reconcile it with the
+maintained Local branch under a separate history-update approval. Until then,
+subsequent runs still replay the current `local` patch series. Download and install
+remain manual; the app does not dispatch this workflow yet.
+
+GitHub requires a dispatchable workflow to exist on the default branch. Keeping
+`main` identical to upstream therefore requires setting the fork's default branch
+to `local` after merging this workflow. That repository setting is a separate
+approved activation step. No PAT, signing secret, schedule or self-hosted runner
+is required.
+
 ### Publishing a verified Local release
 
 Merge the reviewed feature PR into `local` and choose a new Local version. After approving publication, tag the exact merged source and push only that tag:

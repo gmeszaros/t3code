@@ -1,0 +1,189 @@
+name: Local upstream update
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream release tag; empty selects the latest published nightly"
+        type: string
+        default: ""
+      publish_release:
+        description: "Publish the verified candidate as the latest Local release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'gmeszaros/t3code' && github.ref == 'refs/heads/local'
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      candidate: ${{ steps.integrate.outputs.candidate }}
+      upstream: ${{ steps.integrate.outputs.upstream }}
+      local: ${{ steps.integrate.outputs.local }}
+    steps:
+      - name: Fetch the exact Local workflow source
+        env:
+          SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$SOURCE_REPOSITORY"
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve upstream release and replay Local patches
+        id: integrate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh api 'repos/pingdotgg/t3code/releases?per_page=100' --jq '
+              [.[] | select(.draft == false and .published_at != null)
+                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$"))]
+              | max_by(.tag_name | [scan("[0-9]+") | tonumber])
+              | .tag_name // empty')"
+            test -n "$tag"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]
+          gh api "repos/pingdotgg/t3code/releases/tags/$tag" --jq .tag_name > /dev/null
+          git fetch --no-tags https://github.com/pingdotgg/t3code.git main
+          base="$(git merge-base HEAD FETCH_HEAD)"
+          git fetch --no-tags https://github.com/pingdotgg/t3code.git "refs/tags/$tag"
+          upstream="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          cp scripts/rebase-local-update.mjs "$RUNNER_TEMP/rebase-local-update.mjs"
+          node "$RUNNER_TEMP/rebase-local-update.mjs" --local "$GITHUB_SHA" --base "$base" --upstream "$upstream"
+          candidate="$(git rev-parse HEAD)"
+          {
+            echo "candidate=$candidate"
+            echo "upstream=$upstream"
+            echo "local=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "UPSTREAM_SHA=$upstream"
+            echo "CANDIDATE_SHA=$candidate"
+          } >> "$GITHUB_ENV"
+          {
+            echo '### Local upstream integration candidate'
+            echo "Upstream release: $tag ($upstream)"
+            echo "Original Local source: $GITHUB_SHA"
+            echo "Rebased candidate: $candidate"
+            echo 'Published branches are unchanged. Conflicts or failed checks stop the update.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Verify integration and packaging contracts
+        run: |
+          node --test scripts/rebase-local-update.test.mjs
+          vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/updates/LocalReleaseUpdates.test.ts
+          vp run --filter t3 --filter @t3tools/web --filter @t3tools/desktop typecheck
+
+      - name: Verify favorite reordering and update links
+        working-directory: apps/web
+        run: vp test run src/components/desktopUpdate.logic.test.ts src/components/SortableOrder.test.tsx src/components/chat/ModelPickerContent.test.ts src/components/chat/ProviderModelPicker.test.tsx --project unit
+
+      - name: Build and verify candidate
+        run: node scripts/build-local-desktop.mjs --upstream-sha "$UPSTREAM_SHA"
+
+      - name: Preserve the exact candidate source for publication
+        run: |
+          set -euo pipefail
+          git update-ref refs/heads/update-candidate "$CANDIDATE_SHA"
+          git bundle create release-local/source.bundle refs/heads/update-candidate
+
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: local-upstream-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release-local/*.zip
+            release-local/*.build.json
+            release-local/source.bundle
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: inputs.publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: local-upstream-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-local
+
+      - name: Publish immutable candidate and verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ needs.build.outputs.candidate }}
+          UPSTREAM_SHA: ${{ needs.build.outputs.upstream }}
+          ORIGINAL_LOCAL_SHA: ${{ needs.build.outputs.local }}
+        run: |
+          set -euo pipefail
+          for sha in "$CANDIDATE_SHA" "$UPSTREAM_SHA" "$ORIGINAL_LOCAL_SHA"; do
+            [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          done
+          manifest=(release-local/*.build.json)
+          test "${#manifest[@]}" -eq 1
+          version="$(jq -r .version "${manifest[0]}")"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-local\.[0-9]+\.[0-9]+$ ]]
+          test "$(jq -r .sourceSha "${manifest[0]}")" = "$CANDIDATE_SHA"
+          test "$(jq -r .integratedUpstreamSha "${manifest[0]}")" = "$UPSTREAM_SHA"
+          archive="T3-Code-Local-${version}-arm64.zip"
+          test "$(jq -r .archive "${manifest[0]}")" = "$archive"
+          digest="$(jq -r .sha256 "${manifest[0]}")"
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s  %s\n' "$digest" "release-local/$archive" | sha256sum --check
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/local" --jq .object.sha)" = "$ORIGINAL_LOCAL_SHA"
+          git init candidate
+          git -C candidate fetch ../release-local/source.bundle refs/heads/update-candidate
+          test "$(git -C candidate rev-parse FETCH_HEAD)" = "$CANDIDATE_SHA"
+          git -C candidate merge-base --is-ancestor "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+          gh auth setup-git
+          git -C candidate remote add origin "https://github.com/$GH_REPO.git"
+          branch="updates/local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git -C candidate push origin "$CANDIDATE_SHA:refs/heads/$branch"
+          tag="v$version"
+          git -C candidate tag "$tag" "$CANDIDATE_SHA"
+          git -C candidate push origin "refs/tags/$tag"
+          cat > release-notes.md <<EOF_NOTES
+          T3 Code (Local) for macOS Apple Silicon, updated to upstream $UPSTREAM_SHA.
+
+          Local patches from $ORIGINAL_LOCAL_SHA were replayed without conflicts. Scoped tests, typechecks, packaging and artifact verification passed. Download the ZIP and keep the previous app for rollback. Installation remains manual; this build is ad-hoc signed and not notarized.
+
+          Source: $CANDIDATE_SHA on $branch. The Local branch has not been rewritten. Before further development, reconcile this candidate with the maintained Local patch series.
+          EOF_NOTES
+          gh release create "$tag" "release-local/$archive" "${manifest[0]}" --draft --verify-tag --title "T3 Code (Local) $version" --notes-file release-notes.md
+          gh release edit "$tag" --draft=false --latest
