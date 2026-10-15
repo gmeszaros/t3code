@@ -99,6 +99,47 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "persists and broadcasts cross-instance favorite and provider order without changing configuration",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const config = yield* ServerConfig.ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          const work = ProviderInstanceId.make("codex_work");
+          const personal = ProviderInstanceId.make("codex_personal");
+          const a = { provider: work, model: "sol" };
+          const b = { provider: personal, model: "sol" };
+          const c = { provider: work, model: "luna" };
+          const current = yield* service.updateSettings({ favorites: [a, b, c] });
+          const changes = yield* service.subscribeChanges;
+          const next = yield* service.updateSettings({
+            providerOrder: [personal, work],
+            moveModelFavorite: { favorite: c, before: b },
+          });
+          const received = Option.getOrThrow(yield* Stream.runHead(changes));
+          const saved = yield* decodeServerSettingsJson(
+            yield* fs.readFileString(config.settingsPath),
+          );
+          for (const settings of [next, received, saved]) {
+            assert.deepEqual(settings.favorites, [a, c, b]);
+            assert.deepEqual(settings.providerOrder, [personal, work]);
+            assert.deepEqual(settings.providerInstances, current.providerInstances);
+            assert.deepEqual(
+              settings.textGenerationModelSelection,
+              current.textGenerationModelSelection,
+            );
+          }
+          const fresh = yield* ServerSettingsModule.ServerSettingsService.pipe(
+            Effect.flatMap((service) => service.getSettings),
+            Effect.provide(ServerSettingsModule.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+          );
+          assert.deepEqual(fresh.favorites, [a, c, b]);
+          assert.deepEqual(fresh.providerOrder, [personal, work]);
+        }),
+      ).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

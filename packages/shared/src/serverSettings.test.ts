@@ -13,6 +13,7 @@ import { createModelSelection } from "./model.ts";
 import { resolveProjectScripts, projectScriptsInheritDefaults } from "./projectScripts.ts";
 import {
   applyServerSettingsPatch,
+  sortBySavedOrder,
   fallbackTextGenerationModelSelection,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -1152,5 +1153,72 @@ describe("synchronized model preferences", () => {
       favorites: [],
       providerModelPreferences: {},
     });
+  });
+});
+
+describe("shared picker ordering", () => {
+  const work = ProviderInstanceId.make("codex_work");
+  const personal = ProviderInstanceId.make("codex_personal");
+  const a = { provider: work, model: "sol" };
+  const b = { provider: personal, model: "sol" };
+  const c = { provider: work, model: "luna" };
+
+  it("moves favorites across instances without changing membership or selection", () => {
+    const current = { ...DEFAULT_SERVER_SETTINGS, favorites: [a, b, c] };
+    const next = applyServerSettingsPatch(current, {
+      moveModelFavorite: { favorite: c, before: b },
+    });
+    expect(next.favorites).toEqual([a, c, b]);
+    expect(next.textGenerationModelSelection).toEqual(current.textGenerationModelSelection);
+    expect(next.providerInstances).toEqual(current.providerInstances);
+    expect(
+      applyServerSettingsPatch(next, { moveModelFavorite: { favorite: a, before: null } })
+        .favorites,
+    ).toEqual([c, b, a]);
+  });
+
+  it("does not resurrect removed favorites or lose concurrent additions", () => {
+    const current = { ...DEFAULT_SERVER_SETTINGS, favorites: [a, b, c] };
+    const removed = applyServerSettingsPatch(current, {
+      setModelFavorites: [{ ...b, favorite: false }],
+    });
+    expect(
+      applyServerSettingsPatch(removed, { moveModelFavorite: { favorite: b, before: a } })
+        .favorites,
+    ).toEqual([a, c]);
+    expect(
+      applyServerSettingsPatch(removed, { moveModelFavorite: { favorite: c, before: b } })
+        .favorites,
+    ).toEqual([a, c]);
+    const added = applyServerSettingsPatch(removed, {
+      setModelFavorites: [{ ...b, favorite: true }],
+    });
+    expect(
+      applyServerSettingsPatch(added, { moveModelFavorite: { favorite: c, before: a } }).favorites,
+    ).toEqual([c, a, b]);
+  });
+
+  it("keeps defaults, disabled instances and newly discovered providers when ordering", () => {
+    const providers = [
+      { id: work, enabled: true },
+      { id: personal, enabled: false },
+      { id: "new", enabled: true },
+    ];
+    const next = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      providerOrder: [personal, work],
+    });
+    expect(sortBySavedOrder(providers, next.providerOrder, (entry) => entry.id)).toEqual([
+      providers[1],
+      providers[0],
+      providers[2],
+    ]);
+    expect(
+      sortBySavedOrder(
+        [a, b, c],
+        ["codex_personal:sol", "codex_work:luna", "codex_work:sol"],
+        (entry) => `${entry.provider}:${entry.model}`,
+      ),
+    ).toEqual([b, c, a]);
+    expect(next.providerInstances).toEqual(DEFAULT_SERVER_SETTINGS.providerInstances);
   });
 });

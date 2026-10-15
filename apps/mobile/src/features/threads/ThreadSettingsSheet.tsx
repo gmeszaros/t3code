@@ -3,6 +3,7 @@ import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  sortBySavedOrder,
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
@@ -97,6 +98,7 @@ import {
 import {
   canCommitPendingModel,
   favoritesFirst,
+  orderedFavoriteModels,
   modelFavoriteKey,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -360,19 +362,24 @@ function ThreadSettingsSessionProvider(
   const [pendingHiddenKeys, setPendingHiddenKeys] = useState<ReadonlySet<string>>(() => new Set());
   const providerGroups = useMemo(
     () =>
-      manageHidden && config
-        ? groupByProvider(
-            buildModelOptions(
-              config,
-              props.selectedModel,
-              props.lockedProviderInstanceId,
-              props.projectId,
-              true,
-            ),
-          )
-        : props.providerGroups,
+      sortBySavedOrder(
+        manageHidden && config
+          ? groupByProvider(
+              buildModelOptions(
+                config,
+                props.selectedModel,
+                props.lockedProviderInstanceId,
+                props.projectId,
+                true,
+              ),
+            )
+          : props.providerGroups,
+        settings?.providerOrder ?? [],
+        (group) => group.providerKey,
+      ),
     [
       config,
+      settings?.providerOrder,
       manageHidden,
       props.providerGroups,
       props.selectedModel,
@@ -788,107 +795,108 @@ function ThreadSettingsProviderListHeader(props: {
 function useThreadSettingsCatalogItems(
   session: ThreadSettingsSessionValue,
 ): ReadonlyArray<ThreadSettingsCatalogItem> {
-  return useMemo(
-    () =>
-      session.providerGroups.flatMap((group) => {
-        if (
-          session.providerFilter !== null &&
-          session.providerFilter !== FAVORITES_PROVIDER_FILTER &&
-          group.providerKey !== session.providerFilter
-        ) {
-          return [];
-        }
-        const driver = group.models[0]?.providerDriver ?? group.providerKey;
-        const catalogModels =
-          session.manageHidden ||
-          session.showLegacy ||
-          session.providerFilter === FAVORITES_PROVIDER_FILTER
-            ? group.models
-            : group.models.filter(
-                (model) =>
-                  !model.isLegacy ||
-                  session.isDisplayed(model) ||
-                  session.favoriteKeys.has(model.key),
-              );
-        const visibleModels = favoritesFirst(
-          catalogModels.filter(
-            (model) =>
-              (session.providerFilter !== FAVORITES_PROVIDER_FILTER ||
-                session.favoriteKeys.has(model.key)) &&
-              modelMatchesCatalogQuery({
-                model,
-                providerLabel: group.providerLabel,
-                query: session.searchQuery,
-              }),
-          ),
-          session.favoriteKeys,
-        );
-        // Favorites list only selectable models, so it never explains gated ones.
-        const updateRequiredNotice =
-          group.updateRequired && session.providerFilter !== FAVORITES_PROVIDER_FILTER
-            ? formatProviderUpdateRequiredNotice(group.updateRequired, session.searchQuery)
-            : null;
-        if (visibleModels.length === 0 && !updateRequiredNotice) {
-          return [];
-        }
-        const isPrimary = driver !== undefined && PRIMARY_PROVIDER_DRIVERS.has(driver);
-        // Staging a model must not change disclosure state. The applied model
-        // stays stable for the lifetime of this picker (Save closes it), so it
-        // is safe to use as the initial selected-provider default.
-        const containsAppliedSelection = group.models.some(session.isApplied);
-        const isNarrowed = session.providerFilter !== null || session.searchQuery.trim().length > 0;
-        const collapsible = !isNarrowed;
-        const collapsed = providerSectionIsCollapsed({
-          defaultExpanded: isPrimary || containsAppliedSelection,
-          hasExpansionOverride: session.providerExpansionOverrides.has(group.providerKey),
-          isNarrowed,
-        });
-        const provider: ThreadSettingsProviderCatalog = {
-          key: group.providerKey,
-          driver,
-          iconUrl: group.models[0]?.providerIconUrl,
-          label: group.providerLabel,
-          collapsible,
-          collapsed,
-          modelCount: visibleModels.length,
-          models: collapsed ? [] : visibleModels,
-        };
-        return [
-          {
-            kind: "provider" as const,
-            key: `provider:${group.providerKey}`,
-            provider,
-          },
-          ...provider.models.map((option, index) => ({
-            kind: "model" as const,
-            key: `model:${option.key}`,
-            option,
-            isFirst: index === 0,
-            isLast: index === provider.models.length - 1,
-          })),
-          ...(!collapsed && updateRequiredNotice
-            ? [
-                {
-                  kind: "notice" as const,
-                  key: `notice:${group.providerKey}`,
-                  text: updateRequiredNotice,
-                },
-              ]
-            : []),
-        ];
-      }),
-    [
-      session.isApplied,
-      session.isDisplayed,
-      session.favoriteKeys,
-      session.providerExpansionOverrides,
-      session.providerFilter,
-      session.providerGroups,
-      session.searchQuery,
-      session.showLegacy,
-      session.manageHidden,
-    ],
-  );
+  return useMemo(() => {
+    if (session.providerFilter === FAVORITES_PROVIDER_FILTER) {
+      const models = orderedFavoriteModels(
+        session.providerGroups,
+        session.favoriteKeys,
+        session.searchQuery,
+      );
+      return models.map((option, index) => ({
+        kind: "model" as const,
+        key: `model:${option.key}`,
+        option,
+        isFirst: index === 0,
+        isLast: index === models.length - 1,
+      }));
+    }
+    return session.providerGroups.flatMap((group) => {
+      if (session.providerFilter !== null && group.providerKey !== session.providerFilter) {
+        return [];
+      }
+      const driver = group.models[0]?.providerDriver ?? group.providerKey;
+      const catalogModels =
+        session.manageHidden || session.showLegacy
+          ? group.models
+          : group.models.filter(
+              (model) =>
+                !model.isLegacy ||
+                session.isDisplayed(model) ||
+                session.favoriteKeys.has(model.key),
+            );
+      const visibleModels = favoritesFirst(
+        catalogModels.filter((model) =>
+          modelMatchesCatalogQuery({
+            model,
+            providerLabel: group.providerLabel,
+            query: session.searchQuery,
+          }),
+        ),
+        session.favoriteKeys,
+      );
+      const updateRequiredNotice = group.updateRequired
+        ? formatProviderUpdateRequiredNotice(group.updateRequired, session.searchQuery)
+        : null;
+      if (visibleModels.length === 0 && !updateRequiredNotice) {
+        return [];
+      }
+      const isPrimary = driver !== undefined && PRIMARY_PROVIDER_DRIVERS.has(driver);
+      // Staging a model must not change disclosure state. The applied model
+      // stays stable for the lifetime of this picker (Save closes it), so it
+      // is safe to use as the initial selected-provider default.
+      const containsAppliedSelection = group.models.some(session.isApplied);
+      const isNarrowed = session.providerFilter !== null || session.searchQuery.trim().length > 0;
+      const collapsible = !isNarrowed;
+      const collapsed = providerSectionIsCollapsed({
+        defaultExpanded: isPrimary || containsAppliedSelection,
+        hasExpansionOverride: session.providerExpansionOverrides.has(group.providerKey),
+        isNarrowed,
+      });
+      const provider: ThreadSettingsProviderCatalog = {
+        key: group.providerKey,
+        driver,
+        iconUrl: group.models[0]?.providerIconUrl,
+        label: group.providerLabel,
+        collapsible,
+        collapsed,
+        modelCount: visibleModels.length,
+        models: collapsed ? [] : visibleModels,
+      };
+      return [
+        {
+          kind: "provider" as const,
+          key: `provider:${group.providerKey}`,
+          provider,
+        },
+        ...provider.models.map((option, index) => ({
+          kind: "model" as const,
+          key: `model:${option.key}`,
+          option,
+          isFirst: index === 0,
+          isLast: index === provider.models.length - 1,
+        })),
+        ...(!collapsed && updateRequiredNotice
+          ? [
+              {
+                kind: "notice" as const,
+                key: `notice:${group.providerKey}`,
+                text: updateRequiredNotice,
+              },
+            ]
+          : []),
+      ];
+    });
+  }, [
+    session.isApplied,
+    session.isDisplayed,
+    session.favoriteKeys,
+    session.providerExpansionOverrides,
+    session.providerFilter,
+    session.providerGroups,
+    session.searchQuery,
+    session.showLegacy,
+    session.manageHidden,
+  ]);
 }
 
 function ThreadSettingsOptionsItem(props: {

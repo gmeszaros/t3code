@@ -1,3 +1,5 @@
+import { sortBySavedOrder } from "@t3tools/shared/serverSettings";
+import { SortableOrder, SortableOrderItem } from "../SortableOrder";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
@@ -21,7 +23,7 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type ProviderInstanceConfig,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   resolveEnvironmentMachineKind,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -606,9 +608,6 @@ export function EnvironmentProviderSettings({
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
-  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
-    targetInstanceId ?? null,
-  );
   const [updatingProviderInstanceIds, setUpdatingProviderInstanceIds] = useState<
     ReadonlySet<ProviderInstanceId>
   >(() => new Set());
@@ -773,7 +772,7 @@ export function EnvironmentProviderSettings({
     ),
   );
 
-  const rows: InstanceRow[] = [];
+  const unsortedRows: InstanceRow[] = [];
   const visibleDriverKinds = new Set<ProviderDriverKind>(
     visibleProviderSettings.map((providerSettings) => providerSettings.provider),
   );
@@ -795,7 +794,7 @@ export function EnvironmentProviderSettings({
         resolveProviderInstanceEnabled(effectiveInstance) ||
         defaultInstanceId === targetInstanceId)
     ) {
-      rows.push({
+      unsortedRows.push({
         instanceId: defaultInstanceId,
         instance: effectiveInstance,
         driver,
@@ -805,13 +804,13 @@ export function EnvironmentProviderSettings({
     }
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+      unsortedRows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
     }
   }
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
     for (const [id, instance] of list) {
-      rows.push({
+      unsortedRows.push({
         instanceId: id,
         instance,
         driver: instance.driver,
@@ -819,6 +818,12 @@ export function EnvironmentProviderSettings({
       });
     }
   }
+
+  const rows = sortBySavedOrder(unsortedRows, settings.providerOrder, (row) => row.instanceId);
+
+  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
+    () => targetInstanceId ?? rows[0]?.instanceId ?? null,
+  );
 
   const targetInstanceMissing =
     targetInstanceId !== undefined &&
@@ -1209,7 +1214,28 @@ export function EnvironmentProviderSettings({
               className="@min-[48rem]/providers:min-h-0 @min-[48rem]/providers:flex-1"
             >
               <div className="divide-y divide-border/50">
-                {rows.map((row) => renderProviderInstance(row, "list"))}
+                <SortableOrder
+                  ids={rows.map((row) => row.instanceId)}
+                  onMove={(id, before) => {
+                    if (readOnly || !canWriteSettings) return;
+                    const next = rows.map((row) => row.instanceId).filter((entry) => entry !== id);
+                    const index =
+                      before === null ? next.length : next.findIndex((entry) => entry === before);
+                    next.splice(index, 0, ProviderInstanceId.make(id));
+                    updateSettings({ providerOrder: next });
+                  }}
+                >
+                  {rows.map((row) => (
+                    <SortableOrderItem
+                      key={row.instanceId}
+                      id={row.instanceId}
+                      label={row.instance.displayName ?? row.instanceId}
+                      disabled={readOnly || !canWriteSettings}
+                    >
+                      {renderProviderInstance(row, "list")}
+                    </SortableOrderItem>
+                  ))}
+                </SortableOrder>
                 {!readOnly ? (
                   <button
                     type="button"
