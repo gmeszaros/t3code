@@ -147,39 +147,42 @@ it("rejects unknown elements, unsupported actions and excessive text", async () 
   assert.equal(driver.act.mock.calls.length, 0);
 });
 
-for (const phase of ["before-capture", "after-capture", "before-action"] as const) {
-  for (const mismatch of ["process", "name"] as const) {
-    it(`identifies ${mismatch} mismatch ${phase} without exposing app identity`, async () => {
-      const { session, driver } = setup();
-      const changed =
-        mismatch === "process"
-          ? { processId: 17, application: "Test App" }
-          : { processId: 42, application: "private-app-name" };
-      let snapshotId = "";
-      if (phase === "before-action") {
-        snapshotId = (await session.inspect("session-a")).snapshotId;
-      }
-      if (phase === "after-capture") {
-        driver.capture.mockImplementation(async () => {
-          driver.foreground.mockResolvedValue(changed);
-          return capture;
-        });
-      } else {
-        driver.foreground.mockResolvedValue(changed);
-      }
-      await NodeAssert.rejects(
-        phase === "before-action"
-          ? session.act("session-a", snapshotId, { kind: "press", element: 1 })
-          : session.inspect("session-a"),
-        (error: unknown) => {
-          assert.equal(computerFailureReason(error), `focus-${phase}-${mismatch}`);
-          assert.ok(error instanceof Error);
-          assert.ok(!error.message.includes("private-app-name"));
-          return true;
-        },
-      );
-      assert.equal(driver.act.mock.calls.length, 0);
-      if (phase === "before-capture") assert.equal(driver.capture.mock.calls.length, 0);
-    });
+it.each([
+  ["before-capture", "process"],
+  ["before-capture", "name"],
+  ["after-capture", "process"],
+  ["after-capture", "name"],
+  ["before-action", "process"],
+  ["before-action", "name"],
+] as const)("identifies mismatch %s %s without exposing app identity", async (phase, mismatch) => {
+  const { session, driver } = setup();
+  const changed =
+    mismatch === "process"
+      ? { processId: 17, application: "Test App" }
+      : { processId: 42, application: "private-app-name" };
+  let snapshotId = "";
+  if (phase === "before-action") {
+    snapshotId = (await session.inspect("session-a")).snapshotId;
   }
-}
+  if (phase === "after-capture") {
+    driver.capture.mockImplementation(async () => {
+      driver.foreground.mockResolvedValue(changed);
+      return capture;
+    });
+  } else {
+    driver.foreground.mockResolvedValue(changed);
+  }
+  await NodeAssert.rejects(
+    phase === "before-action"
+      ? session.act("session-a", snapshotId, { kind: "press", element: 1 })
+      : session.inspect("session-a"),
+    (error: unknown) => {
+      assert.equal(computerFailureReason(error), `focus-${phase}-${mismatch}`);
+      assert.ok(error instanceof Error);
+      assert.ok(!error.message.includes("private-app-name"));
+      return true;
+    },
+  );
+  assert.equal(driver.act.mock.calls.length, 0);
+  if (phase === "before-capture") assert.equal(driver.capture.mock.calls.length, 0);
+});
