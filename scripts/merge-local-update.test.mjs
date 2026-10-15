@@ -4,7 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { rebaseLocalUpdate } from "./rebase-local-update.mjs";
+import { mergeLocalUpdate } from "./merge-local-update.mjs";
 
 function fixture(run) {
   const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "local-update-test-"));
@@ -36,15 +36,18 @@ function fixture(run) {
   }
 }
 
-NodeTest.test("replays Local changes without changing either published branch", () =>
-  fixture((f) => {
-    const result = rebaseLocalUpdate(f);
-    NodeAssert.equal(f.git("rev-parse", "local"), f.localSha);
-    NodeAssert.equal(f.git("rev-parse", "main"), f.upstreamSha);
-    NodeAssert.equal(f.git("show", `${result}:feature`), "local feature");
-    NodeAssert.equal(f.git("show", `${result}:upstream`), "upstream change");
-    NodeAssert.equal(f.git("rev-parse", `${result}^`), f.upstreamSha);
-  }),
+NodeTest.test(
+  "merges upstream while retaining Local commit identities without changing either published branch",
+  () =>
+    fixture((f) => {
+      const result = mergeLocalUpdate(f);
+      NodeAssert.equal(f.git("rev-parse", "local"), f.localSha);
+      NodeAssert.equal(f.git("rev-parse", "main"), f.upstreamSha);
+      NodeAssert.equal(f.git("show", `${result}:feature`), "local feature");
+      NodeAssert.equal(f.git("show", `${result}:upstream`), "upstream change");
+      NodeAssert.equal(f.git("rev-parse", `${result}^`), f.localSha);
+      NodeAssert.equal(f.git("rev-parse", `${result}^2`), f.upstreamSha);
+    }),
 );
 
 NodeTest.test("conflicts abort and restore the original detached source", () =>
@@ -53,7 +56,7 @@ NodeTest.test("conflicts abort and restore the original detached source", () =>
     f.git("switch", "main");
     const upstreamSha = f.commit("shared", "upstream conflict\n");
     f.git("switch", "local");
-    NodeAssert.throws(() => rebaseLocalUpdate({ ...f, localSha, upstreamSha }));
+    NodeAssert.throws(() => mergeLocalUpdate({ ...f, localSha, upstreamSha }));
     NodeAssert.equal(f.git("rev-parse", "HEAD"), localSha);
     NodeAssert.equal(f.git("status", "--porcelain"), "");
   }),
@@ -62,9 +65,9 @@ NodeTest.test("conflicts abort and restore the original detached source", () =>
 NodeTest.test("rejects downgrades and unchanged upstream", () =>
   fixture((f) => {
     NodeAssert.throws(() =>
-      rebaseLocalUpdate({ ...f, baseSha: f.upstreamSha, upstreamSha: f.baseSha }),
+      mergeLocalUpdate({ ...f, baseSha: f.upstreamSha, upstreamSha: f.baseSha }),
     );
-    NodeAssert.throws(() => rebaseLocalUpdate({ ...f, upstreamSha: f.baseSha }), /No newer/);
+    NodeAssert.throws(() => mergeLocalUpdate({ ...f, upstreamSha: f.baseSha }), /No newer/);
     NodeAssert.equal(f.git("rev-parse", "HEAD"), f.localSha);
   }),
 );
@@ -72,14 +75,14 @@ NodeTest.test("rejects downgrades and unchanged upstream", () =>
 NodeTest.test("preserves dirty work", () =>
   fixture((f) => {
     NodeFS.writeFileSync(NodePath.join(f.cwd, "untracked"), "keep");
-    NodeAssert.throws(() => rebaseLocalUpdate(f), /clean/);
+    NodeAssert.throws(() => mergeLocalUpdate(f), /clean/);
     NodeAssert.equal(f.git("status", "--porcelain"), "?? untracked");
   }),
 );
 
 NodeTest.test("candidate bundle transports the exact source without executing it", () =>
   fixture((f) => {
-    const result = rebaseLocalUpdate(f);
+    const result = mergeLocalUpdate(f);
     f.git("update-ref", "refs/heads/update-candidate", result);
     f.git("bundle", "create", "source.bundle", "refs/heads/update-candidate");
     f.git("init", "verification");
@@ -89,7 +92,7 @@ NodeTest.test("candidate bundle transports the exact source without executing it
   }),
 );
 
-NodeTest.test("non-linear Local history is rejected before rebasing", () =>
+NodeTest.test("previous Local merges remain intact during the next update", () =>
   fixture((f) => {
     f.git("switch", "-c", "side", f.localSha);
     f.commit("side", "side change\n");
@@ -97,7 +100,9 @@ NodeTest.test("non-linear Local history is rejected before rebasing", () =>
     f.commit("mainline", "mainline change\n");
     f.git("merge", "--no-ff", "side", "-m", "merge fixture");
     const localSha = f.git("rev-parse", "HEAD");
-    NodeAssert.throws(() => rebaseLocalUpdate({ ...f, localSha }), /linear/);
-    NodeAssert.equal(f.git("rev-parse", "HEAD"), localSha);
+    const result = mergeLocalUpdate({ ...f, localSha });
+    f.git("merge-base", "--is-ancestor", localSha, result);
+    NodeAssert.equal(f.git("show", `${result}:side`), "side change");
+    NodeAssert.equal(f.git("show", `${result}:mainline`), "mainline change");
   }),
 );

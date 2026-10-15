@@ -8,7 +8,7 @@ on:
         type: string
         default: ""
       publish_release:
-        description: "Publish the verified candidate as the latest Local release"
+        description: "Fast-forward Local to the verified merge and publish a release"
         type: boolean
         default: false
 
@@ -20,13 +20,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  sync_main:
     if: github.repository == 'gmeszaros/t3code' && github.ref == 'refs/heads/local'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      upstream: ${{ steps.sync.outputs.upstream }}
+    steps:
+      - name: Fast-forward fork main to the published upstream nightly
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh api 'repos/pingdotgg/t3code/releases?per_page=100' --jq '
+              [.[] | select(.draft == false and .published_at != null)
+                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$"))]
+              | max_by(.tag_name | [scan("[0-9]+") | tonumber])
+              | .tag_name // empty')"
+            test -n "$tag"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]
+          gh api "repos/pingdotgg/t3code/releases/tags/$tag" --jq .tag_name > /dev/null
+          git init .
+          git remote add origin "https://github.com/$GH_REPO.git"
+          git fetch --no-tags origin main
+          old_main="$(git rev-parse FETCH_HEAD)"
+          git fetch --no-tags https://github.com/pingdotgg/t3code.git "refs/tags/$tag"
+          upstream="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          git merge-base --is-ancestor "$old_main" "$upstream"
+          gh auth setup-git
+          git push origin "$upstream:refs/heads/main"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Upstream nightly synchronization'
+            echo "Release: $tag ($upstream)"
+            echo 'Fork main is synchronized without rewriting history. Local has not changed.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: sync_main
     runs-on: macos-15
     timeout-minutes: 60
     outputs:
       candidate: ${{ steps.integrate.outputs.candidate }}
-      upstream: ${{ steps.integrate.outputs.upstream }}
+      upstream: ${{ needs.sync_main.outputs.upstream }}
       local: ${{ steps.integrate.outputs.local }}
     steps:
       - name: Fetch the exact Local workflow source
@@ -48,46 +91,31 @@ jobs:
           cache: false
           run-install: false
 
-      - name: Resolve upstream release and replay Local patches
+      - name: Merge synchronized main into a disposable Local candidate
         id: integrate
         env:
-          GH_TOKEN: ${{ github.token }}
-          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ needs.sync_main.outputs.upstream }}
         run: |
           set -euo pipefail
-          tag="$REQUESTED_TAG"
-          if [[ -z "$tag" ]]; then
-            tag="$(gh api 'repos/pingdotgg/t3code/releases?per_page=100' --jq '
-              [.[] | select(.draft == false and .published_at != null)
-                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$"))]
-              | max_by(.tag_name | [scan("[0-9]+") | tonumber])
-              | .tag_name // empty')"
-            test -n "$tag"
-          fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]
-          gh api "repos/pingdotgg/t3code/releases/tags/$tag" --jq .tag_name > /dev/null
-          git fetch --no-tags https://github.com/pingdotgg/t3code.git main
-          base="$(git merge-base HEAD FETCH_HEAD)"
-          git fetch --no-tags https://github.com/pingdotgg/t3code.git "refs/tags/$tag"
-          upstream="$(git rev-parse 'FETCH_HEAD^{commit}')"
-          cp scripts/rebase-local-update.mjs "$RUNNER_TEMP/rebase-local-update.mjs"
-          node "$RUNNER_TEMP/rebase-local-update.mjs" --local "$GITHUB_SHA" --base "$base" --upstream "$upstream"
+          [[ "$UPSTREAM_SHA" =~ ^[a-f0-9]{40}$ ]]
+          git fetch --no-tags origin "$UPSTREAM_SHA"
+          base="$(git merge-base HEAD "$UPSTREAM_SHA")"
+          cp scripts/merge-local-update.mjs "$RUNNER_TEMP/merge-local-update.mjs"
+          node "$RUNNER_TEMP/merge-local-update.mjs" --local "$GITHUB_SHA" --base "$base" --upstream "$UPSTREAM_SHA"
           candidate="$(git rev-parse HEAD)"
           {
             echo "candidate=$candidate"
-            echo "upstream=$upstream"
             echo "local=$GITHUB_SHA"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "UPSTREAM_SHA=$upstream"
+            echo "UPSTREAM_SHA=$UPSTREAM_SHA"
             echo "CANDIDATE_SHA=$candidate"
           } >> "$GITHUB_ENV"
           {
-            echo '### Local upstream integration candidate'
-            echo "Upstream release: $tag ($upstream)"
+            echo '### Local upstream merge candidate'
             echo "Original Local source: $GITHUB_SHA"
-            echo "Rebased candidate: $candidate"
-            echo 'Published branches are unchanged. Conflicts or failed checks stop the update.'
+            echo "Merge candidate: $candidate"
+            echo 'All original Local commits remain ancestors. Conflicts stop the update.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Rust
@@ -101,7 +129,7 @@ jobs:
 
       - name: Verify integration and packaging contracts
         run: |
-          node --test scripts/rebase-local-update.test.mjs
+          node --test scripts/merge-local-update.test.mjs
           vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/updates/LocalReleaseUpdates.test.ts
           vp run --filter t3 --filter @t3tools/web --filter @t3tools/desktop typecheck
 
@@ -171,19 +199,20 @@ jobs:
           git -C candidate fetch ../release-local/source.bundle refs/heads/update-candidate
           test "$(git -C candidate rev-parse FETCH_HEAD)" = "$CANDIDATE_SHA"
           git -C candidate merge-base --is-ancestor "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+          git -C candidate merge-base --is-ancestor "$ORIGINAL_LOCAL_SHA" "$CANDIDATE_SHA"
           gh auth setup-git
           git -C candidate remote add origin "https://github.com/$GH_REPO.git"
           branch="updates/local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git -C candidate push origin "$CANDIDATE_SHA:refs/heads/$branch"
+          git -C candidate push --atomic origin "$CANDIDATE_SHA:refs/heads/$branch" "$CANDIDATE_SHA:refs/heads/local"
           tag="v$version"
           git -C candidate tag "$tag" "$CANDIDATE_SHA"
           git -C candidate push origin "refs/tags/$tag"
           cat > release-notes.md <<EOF_NOTES
           T3 Code (Local) for macOS Apple Silicon, updated to upstream $UPSTREAM_SHA.
 
-          Local patches from $ORIGINAL_LOCAL_SHA were replayed without conflicts. Scoped tests, typechecks, packaging and artifact verification passed. Download the ZIP and keep the previous app for rollback. Installation remains manual; this build is ad-hoc signed and not notarized.
+          Local patches from $ORIGINAL_LOCAL_SHA were retained in a merge without conflicts. Scoped tests, typechecks, packaging and artifact verification passed. Download the ZIP and keep the previous app for rollback. Installation remains manual; this build is ad-hoc signed and not notarized.
 
-          Source: $CANDIDATE_SHA on $branch. The Local branch has not been rewritten. Before further development, reconcile this candidate with the maintained Local patch series.
+          Source: $CANDIDATE_SHA on $branch. The Local branch was fast-forwarded to this verified merge. Existing Local commit identities are preserved.
           EOF_NOTES
           gh release create "$tag" "release-local/$archive" "${manifest[0]}" --draft --verify-tag --title "T3 Code (Local) $version" --notes-file release-notes.md
           gh release edit "$tag" --draft=false --latest
