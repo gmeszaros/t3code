@@ -44,10 +44,10 @@ The app checks the latest published Local release and opens its download page fr
 
 `Local upstream update` is the first stage of the upstream update pipeline. Run it
 against `local`, select an upstream release tag (or leave it empty for the latest
-stable release), and leave `publish_release` off for an artifact-only trial.
+published nightly), and leave `publish_release` off for an artifact-only trial.
 The workflow rejects older or unchanged upstream bases, non-linear Local history,
-and rebase conflicts. A stable release can lag behind the fork's integrated base;
-in that case choose a newer upstream release or wait for one.
+and rebase conflicts. Stable and preview releases are excluded from automatic selection. An explicit
+release tag remains available for controlled trials; downgrade checks still apply.
 
 The candidate replays the Local patch series in a disposable checkout, runs scoped
 integration tests and typechecks, then builds and verifies the macOS arm64 app.

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: "Upstream release tag; empty selects the latest stable release"
+        description: "Upstream release tag; empty selects the latest published nightly"
         type: string
         default: ""
       publish_release:
@@ -57,7 +57,12 @@ jobs:
           set -euo pipefail
           tag="$REQUESTED_TAG"
           if [[ -z "$tag" ]]; then
-            tag="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
+            tag="$(gh api 'repos/pingdotgg/t3code/releases?per_page=100' --jq '
+              [.[] | select(.draft == false and .published_at != null)
+                | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$"))]
+              | max_by(.tag_name | [scan("[0-9]+") | tonumber])
+              | .tag_name // empty')"
+            test -n "$tag"
           fi
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]
           gh api "repos/pingdotgg/t3code/releases/tags/$tag" --jq .tag_name > /dev/null
