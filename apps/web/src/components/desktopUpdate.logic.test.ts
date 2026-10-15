@@ -45,10 +45,10 @@ describe("desktop update button state", () => {
     expect(resolveDesktopUpdateButtonAction(state)).toBe("release");
     expect(getDesktopUpdateButtonTooltip(state)).toContain("open the release");
     expect(getDesktopUpdateReleaseUrl(state.availableVersion)).toBe(
-      "https://github.com/gmeszaros/t3code-local/releases/tag/v0.0.46-local.4.1",
+      "https://github.com/gmeszaros/t3code/releases/tag/v0.0.46-local.4.1",
     );
     expect(getDesktopUpdateReleaseHistoryUrl(state.currentVersion)).toBe(
-      "https://github.com/gmeszaros/t3code-local/releases",
+      "https://github.com/gmeszaros/t3code/releases",
     );
     expect(
       resolveDesktopUpdateButtonAction({

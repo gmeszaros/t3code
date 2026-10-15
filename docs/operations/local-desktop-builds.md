@@ -4,7 +4,7 @@
 
 Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` identical to upstream. The `local` branch contains the linear Local patch series above `main`. Create feature PRs against `local`, so their diffs contain only the feature changes.
 
-The previous `gmeszaros/t3code-local` repository retains historical releases and branches. The migration leaves the installed app and its profile unchanged. Future builds check releases in this fork.
+The previous `gmeszaros/t3code-local` repository was deleted. The installed app and its profile remain unchanged. Both release checks and download links use this fork.
 
 ## Build, release and synchronization workflow
 
@@ -41,6 +41,24 @@ uploads a ZIP and build manifest for one day. The optional **Publish release** i
 The workflow lives on `local` so default `main` stays identical to upstream. GitHub requires manually dispatched workflows to exist on the default branch, so this fork does not currently support dispatching the Local build through Actions. Use `node scripts/build-local-desktop.mjs` locally. Release publication is a separately approved operation. See [GitHub manual workflow requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow). After packaging verification, the workflow uploads the ZIP and manifest to a draft release and publishes it as latest. An existing tag is never overwritten.
 When importing a fork, review its inherited workflows before enabling Actions;
 upstream release workflows are not configured for this personal build.
+
+### Publishing a verified Local release
+
+Merge the reviewed feature PR into `local`, then build its exact merged revision in a clean worktree:
+
+```bash
+node scripts/build-local-desktop.mjs --output-dir release-local
+```
+
+The output contains `T3-Code-Local-<version>-arm64.zip` and the matching `.build.json`. Read `version` and `sourceSha` from that manifest. After approving the release notes and publication, use those values below; upload both files before making the release public:
+
+```bash
+gh release create "v<version>" --repo gmeszaros/t3code --target "<sourceSha>" --title "T3 Code Local <version>" --draft --notes-file release-notes.md
+gh release upload "v<version>" "release-local/T3-Code-Local-<version>-arm64.zip" "release-local/T3-Code-Local-<version>-arm64.build.json" --repo gmeszaros/t3code
+gh release edit "v<version>" --repo gmeszaros/t3code --draft=false --latest
+```
+
+Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
 Keep inherited upstream workflows disabled. The Local workflow definition is retained for a future explicit CI setup. Leave `main` unchanged and use local packaging until that setup is approved.
 

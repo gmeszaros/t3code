@@ -27,7 +27,7 @@ export function isLocalDesktopVersion(version: string): boolean {
 
 export function getDesktopUpdateReleaseHistoryUrl(version = ""): string {
   return isLocalDesktopVersion(version)
-    ? "https://github.com/gmeszaros/t3code-local/releases"
+    ? "https://github.com/gmeszaros/t3code/releases"
     : DESKTOP_RELEASE_HISTORY_URL;
 }
 
