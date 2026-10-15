@@ -4,8 +4,9 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import { SortableOrder, SortableOrderItem } from "./SortableOrder";
+import { Combobox, ComboboxListVirtualized } from "./ui/combobox";
 
-it.each(["keyboard", "pointer"])(
+it.each(["keyboard", "keyboard inside a combobox", "pointer"])(
   "reorders with %s without selecting a row, and Escape cancels",
   async (input) => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -33,7 +34,7 @@ it.each(["keyboard", "pointer"])(
       });
     function List() {
       const [ids, setIds] = useState(["codex:sol", "claude:opus", "codex:luna"]);
-      return (
+      const list = (
         <SortableOrder
           ids={ids}
           onMove={(id, before) => {
@@ -54,6 +55,13 @@ it.each(["keyboard", "pointer"])(
           ))}
         </SortableOrder>
       );
+      return input === "keyboard inside a combobox" ? (
+        <Combobox inline open items={ids}>
+          <ComboboxListVirtualized>{list}</ComboboxListVirtualized>
+        </Combobox>
+      ) : (
+        list
+      );
     }
     const key = async (target: EventTarget, code: string) => {
       await act(async () => {
@@ -73,10 +81,10 @@ it.each(["keyboard", "pointer"])(
         'button[aria-label^="Reorder codex:sol"]',
       )!;
       handle.focus();
-      if (input === "keyboard") {
+      if (input.startsWith("keyboard")) {
         await key(handle, "Space");
-        await key(document, "ArrowDown");
-        await key(document, "Space");
+        await key(handle, "ArrowDown");
+        await key(handle, "Space");
       } else {
         const pointer = async (target: EventTarget, type: string, y: number) => {
           await act(async () => {
@@ -106,8 +114,8 @@ it.each(["keyboard", "pointer"])(
       expect(select).not.toHaveBeenCalled();
       move.mockClear();
       await key(handle, "Space");
-      await key(document, "ArrowDown");
-      await key(document, "Escape");
+      await key(handle, "ArrowDown");
+      await key(handle, "Escape");
       expect(move).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());

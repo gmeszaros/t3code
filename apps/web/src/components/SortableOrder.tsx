@@ -86,7 +86,11 @@ export function SortableOrderItem(props: {
             aria-label={`Reorder ${props.label}. Press Space, use arrow keys, then Space to save.`}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => {
-              event.stopPropagation();
+              (
+                event as typeof event & { preventBaseUIHandler?: () => void }
+              ).preventBaseUIHandler?.();
+              // Active keyboard drags listen on document for move, save, and cancel.
+              if (!isDragging) event.stopPropagation();
               listeners?.onKeyDown?.(event);
             }}
           >
