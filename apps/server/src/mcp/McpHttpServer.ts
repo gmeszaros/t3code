@@ -19,6 +19,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -869,6 +870,76 @@ export const layerMcpTransport = McpServer.layerHttp({
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const layerComputerToolkit = imageToolRegistration(
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const built = yield* ComputerTools.ComputerToolkit;
+    // Request identity must come from the calling fiber, not registration.
+    const services = yield* Effect.context<
+      | DesktopComputerClient.DesktopComputerClient
+      | ProjectionStoreV2.ProjectionStoreV2
+      | McpProviderSessions.McpProviderSessions
+      | ThreadManagementService.ThreadManagementService
+    >().pipe(
+      Effect.map(
+        Context.pick(
+          DesktopComputerClient.DesktopComputerClient,
+          ProjectionStoreV2.ProjectionStoreV2,
+          McpProviderSessions.McpProviderSessions,
+          ThreadManagementService.ThreadManagementService,
+        ),
+      ),
+    );
+
+    for (const tool of Object.values(ComputerTools.ComputerToolkit.tools)) {
+      yield* server.addTool({
+        tool: new McpSchema.Tool({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: Tool.getJsonSchema(tool),
+          annotations: {
+            readOnlyHint:
+              tool.name === "computer_snapshot" || tool.name === "computer_access_status",
+            destructiveHint: tool.name === "computer_action",
+            openWorldHint: true,
+          },
+        }),
+        annotations: tool.annotations,
+        handle: (payload) =>
+          Effect.withFiber((fiber) =>
+            built.handle(tool.name, payload).pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.map(({ encodedResult, isFailure }) =>
+                isFailure
+                  ? new McpSchema.CallToolResult({
+                      isError: true,
+                      content: [{ type: "text", text: JSON.stringify(encodedResult) }],
+                    })
+                  : (encodedResult as McpSchema.CallToolResult),
+              ),
+              Effect.catchCause(() =>
+                Effect.succeed(
+                  ComputerTools.computerToolResult({
+                    kind: "unavailable",
+                    reason: "worker-failed",
+                  }),
+                ),
+              ),
+              Effect.provide(services),
+              Effect.provideService(
+                McpInvocationContext.McpInvocationContext,
+                Context.getUnsafe(fiber.context, McpInvocationContext.McpInvocationContext),
+              ),
+            ),
+          ),
+      });
+    }
+  }),
+  ComputerTools.layer,
+);
+
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
@@ -881,9 +952,7 @@ export const layer = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
-  // Hand-registered tools: the computer bridge resolves the invoking thread
-  // per request from McpInvocationContext, so it registers directly.
-  ComputerTools.registration.pipe(
+  layerComputerToolkit.pipe(
     Layer.provide(DesktopComputerClient.layer),
     Layer.provide(McpProviderSessions.layer),
   ),

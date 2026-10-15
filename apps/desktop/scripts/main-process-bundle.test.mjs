@@ -13,12 +13,16 @@ it("keeps lazy Linux imports and worker bundles from executing desktop startup t
   try {
     const workerEntries = [
       "src/electron/WindowsForegroundFocusWorker.ts",
+      "src/computer/ComputerWorker.ts",
+      "src/zcode/HeadlessPreload.ts",
       "src/snapShot/GlobalShiftShortcutWorker.ts",
       "src/snapShot/RegionSnapShotWorker.ts",
       "src/snapShot/SnapShotAccessibilityWorker.ts",
     ];
     await Promise.all([
       NodeFSP.mkdir(NodePath.join(directory, "src/electron"), { recursive: true }),
+      NodeFSP.mkdir(NodePath.join(directory, "src/computer"), { recursive: true }),
+      NodeFSP.mkdir(NodePath.join(directory, "src/zcode"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/snapShot"), { recursive: true }),
     ]);
     await Promise.all([
@@ -103,7 +107,10 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(workers, [42, 42, 42, 42]);
+    assert.deepEqual(
+      workers,
+      workerEntries.map(() => 42),
+    );
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
@@ -113,8 +120,13 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
 it("loads the emitted packaged boot entry and backend cache preload", async () => {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-boot-"));
   try {
-    const entries = ["src/boot.ts", "src/compileCache.ts"];
-    await NodeFSP.mkdir(NodePath.join(directory, "src"));
+    const entries = ["src/boot.ts", "src/compileCache.ts", "src/app/PackagedLocalBuild.ts"];
+    await NodeFSP.mkdir(NodePath.join(directory, "src/app"), { recursive: true });
+    await NodeFSP.mkdir(NodePath.join(directory, "node_modules/electron"), { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "node_modules/electron/index.js"),
+      "exports.app = { isPackaged: false };",
+    );
     await Promise.all(
       entries.map((entry) =>
         NodeFSP.copyFile(new URL(`../${entry}`, import.meta.url), NodePath.join(directory, entry)),
