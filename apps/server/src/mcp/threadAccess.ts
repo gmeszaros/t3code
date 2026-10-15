@@ -16,7 +16,6 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { assertLiveThread } from "./McpInvocationContext.ts";
-export { assertLiveThread, assertPreviewAction } from "./McpInvocationContext.ts";
 
 export const unavailable = () =>
   new OrchestratorMcpFailure({

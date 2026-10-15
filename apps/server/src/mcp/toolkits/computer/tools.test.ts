@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  RunId,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationV2ThreadShell,
@@ -10,7 +11,9 @@ import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";
 
-import { computerToolResult, currentComputerInvocation, registration } from "./tools.ts";
+import { computerToolResult, currentComputerInvocation } from "./tools.ts";
+import { layerComputerToolkit } from "../../McpHttpServer.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -44,6 +47,8 @@ const thread = {
   id: threadCaller.threadId,
   title: "Test",
   archivedAt: null,
+  deletedAt: null,
+  activeRunId: RunId.make("computer-test-run"),
   providerInstanceId: threadCaller.providerInstanceId,
   status: "running" as const,
   interactionMode: "default" as const,
@@ -104,7 +109,12 @@ it.effect("MCP actions re-read mode and revoke instead of executing after switch
         yield* Effect.addFinalizer(() => sessions.clear(threadCaller.threadId));
       }),
     ).pipe(Layer.provideMerge(McpProviderSessions.layer));
-    const testLayer = registration.pipe(
+    const testLayer = layerComputerToolkit.pipe(
+      Layer.provide(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.sync(() => ({ ...thread, interactionMode: mode })),
+        }),
+      ),
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(sessionsLayer),
       Layer.provide(
@@ -130,6 +140,11 @@ it.effect("MCP actions re-read mode and revoke instead of executing after switch
       mode = "plan";
       const denied = yield* server.callTool({ name: "computer_action", arguments: args });
       assert.isTrue(denied.isError);
+      assert.deepEqual(commands, ["act", "stop"]);
+      const external = yield* server
+        .callTool({ name: "computer_action", arguments: args })
+        .pipe(Effect.provideService(McpInvocationContext, { ...scope, thread: undefined }));
+      assert.isTrue(external.isError);
       assert.deepEqual(commands, ["act", "stop"]);
     }).pipe(
       Effect.provide(testLayer),

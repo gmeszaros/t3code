@@ -1,6 +1,4 @@
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
@@ -114,15 +112,6 @@ export interface ZCodeAppServerClientService {
   readonly sessionEvents: Stream.Stream<ZCodeSchema.SessionEventEnvelope>;
   readonly pid: number | undefined;
 }
-
-/**
- * One live connection to a spawned `zcode app-server --stdio` child. Each
- * session runtime owns its own client; the tag is required by adapters and
- * provided by `layerChildProcess`.
- */
-export const ZCodeAppServerClient = Context.Service<ZCodeAppServerClientService>(
-  "t3/provider/zcode/ZCodeAppServerClient/ZCodeAppServerClient",
-);
 
 const decodeSessionEvent = Schema.decodeUnknownSync(ZCodeSchema.SessionEventEnvelope);
 const decodeStateUpdated = Schema.decodeUnknownSync(ZCodeSchema.StateUpdatedNotification);
@@ -385,10 +374,3 @@ export const makeClientFromHandle = Effect.fn("t3-provider-zcode-makeClient")(fu
     pid: handle?.pid,
   } satisfies ZCodeAppServerClientService;
 });
-
-/** Builds a typed client over an existing child process stdio handle. */
-export const layerChildProcess = (
-  handle: ChildProcessSpawner.ChildProcessHandle,
-  options: ZCodeAppServerClientOptions = {},
-): Layer.Layer<typeof ZCodeAppServerClient> =>
-  Layer.effect(ZCodeAppServerClient as never, makeClientFromHandle(handle, options)) as never;

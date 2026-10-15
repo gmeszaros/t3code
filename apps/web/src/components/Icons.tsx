@@ -364,18 +364,6 @@ export const CursorIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
-export const ZCodeIcon: Icon = ({ className, ...props }) => (
-  <svg
-    {...props}
-    viewBox="0 0 24 24"
-    fill="none"
-    className={cn("fill-[#0F0F0F] dark:fill-[#F5F5F5]", className)}
-  >
-    <path d="M4.2 3h9.3l6.3 8.1-8.7 9.9H4.2l8.4-9.6L6.9 6H4.2V3z" />
-    <path d="M6.6 18.3h9.9V21H6.6v-2.7z" opacity=".55" />
-  </svg>
-);
-
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}
