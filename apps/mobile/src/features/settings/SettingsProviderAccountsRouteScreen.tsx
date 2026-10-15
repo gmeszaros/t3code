@@ -1,3 +1,4 @@
+import { sortBySavedOrder } from "@t3tools/shared/serverSettings";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -40,7 +41,11 @@ export function SettingsProviderAccountsRouteScreen() {
           ) : (
             selectedTargets.map((environment) => (
               <SettingsSection key={environment.environmentId} title={environment.label}>
-                {environment.serverConfig.providers
+                {sortBySavedOrder(
+                  environment.serverConfig.providers,
+                  environment.serverConfig.settings.providerOrder,
+                  (provider) => provider.instanceId,
+                )
                   .filter(
                     (provider) =>
                       provider.setup?.canAuthenticate ||

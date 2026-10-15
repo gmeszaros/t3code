@@ -79,6 +79,16 @@ messages while disconnected. Uploads resume when you reconnect. Drafts and queue
 messages survive app restarts. Signing out of T3 Connect keeps that work on your
 device until you sign back into the same account.
 
+## Model and provider order
+
+On web and desktop, drag the reorder handle in the model picker's Favorites list to
+arrange favorites across provider instances. Reorder instances in Settings > Providers
+to change their order there and in the picker sidebar. Focus a reorder handle and press
+Space, use the arrow keys, then press Space to save or Escape to cancel.
+
+Both orders are saved on the selected environment and shared with its connected clients.
+Model picker shortcuts follow the visible model order.
+
 ## Custom models
 
 On web and desktop, use Settings → Providers → **Models** to add an unlisted model with a custom

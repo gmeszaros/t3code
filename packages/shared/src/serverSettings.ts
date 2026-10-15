@@ -396,6 +396,18 @@ function translateLegacyProjectOverridePatch(
   } as ServerSettingsPatch;
 }
 
+/** Saved entries lead; new or temporarily absent catalog entries retain their fallback order. */
+export function sortBySavedOrder<T>(
+  items: ReadonlyArray<T>,
+  order: ReadonlyArray<string>,
+  key: (item: T) => string,
+): T[] {
+  const ranks = new Map(order.map((id, index) => [id, index]));
+  return [...items].sort(
+    (a, b) => (ranks.get(key(a)) ?? Infinity) - (ranks.get(key(b)) ?? Infinity),
+  );
+}
+
 export function applyServerSettingsPatch(
   current: ServerSettings,
   rawPatch: ServerSettingsPatch,
@@ -405,6 +417,7 @@ export function applyServerSettingsPatch(
   const {
     migrateModelPreferences,
     setModelFavorites,
+    moveModelFavorite,
     setModelsHidden,
     setProviderModelOrder,
     providerModelPreferences,
@@ -464,7 +477,7 @@ export function applyServerSettingsPatch(
         : undefined;
   const initialFavorites =
     patch.favorites ?? current.favorites ?? migrateModelPreferences?.favorites ?? null;
-  const favorites =
+  let favorites =
     setModelFavorites?.reduce((current, change) => {
       const exists = current.some(
         (favorite) => favorite.provider === change.provider && favorite.model === change.model,
@@ -477,6 +490,25 @@ export function applyServerSettingsPatch(
             (favorite) => favorite.provider !== change.provider || favorite.model !== change.model,
           );
     }, initialFavorites ?? []) ?? initialFavorites;
+  if (moveModelFavorite && favorites) {
+    const matches = (
+      a: ModelPreferences["favorites"][number],
+      b: ModelPreferences["favorites"][number],
+    ) => a.provider === b.provider && a.model === b.model;
+    const { favorite, before } = moveModelFavorite;
+    const source = favorites.find((entry) => matches(entry, favorite));
+    // A delayed drag cannot restore a removed favorite or move against a vanished target.
+    if (
+      source &&
+      (before === null || favorites.some((entry) => matches(entry, before))) &&
+      (before === null || !matches(favorite, before))
+    ) {
+      const remaining = favorites.filter((entry) => !matches(entry, favorite));
+      const index =
+        before === null ? remaining.length : remaining.findIndex((entry) => matches(entry, before));
+      favorites = [...remaining.slice(0, index), source, ...remaining.slice(index)];
+    }
+  }
   const initialModelPreferences =
     providerModelPreferences ??
     current.providerModelPreferences ??

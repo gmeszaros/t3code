@@ -1,3 +1,4 @@
+import { sortBySavedOrder } from "@t3tools/shared/serverSettings";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import type { ProviderInstanceId } from "@t3tools/contracts";
 
@@ -16,6 +17,28 @@ export function favoritesFirst(
     (favoriteKeys.has(model.key) ? favorites : others).push(model);
   }
   return [...favorites, ...others];
+}
+
+/** Favorites are one cross-instance list; retain the provider label for identical model names. */
+export function orderedFavoriteModels(
+  groups: ReadonlyArray<ProviderGroup>,
+  favoriteKeys: ReadonlySet<string>,
+  query: string,
+): ReadonlyArray<ModelOption> {
+  return sortBySavedOrder(
+    groups.flatMap((group) =>
+      group.models.filter(
+        (model) =>
+          favoriteKeys.has(model.key) &&
+          modelMatchesCatalogQuery({ model, providerLabel: group.providerLabel, query }),
+      ),
+    ),
+    [...favoriteKeys],
+    (model) => model.key,
+  ).map((model) => ({
+    ...model,
+    subtitle: [model.providerLabel, model.subtitle].filter(Boolean).join(" - "),
+  }));
 }
 
 /** Match the terms a user can actually see or recognize in the model picker. */

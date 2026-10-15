@@ -1135,6 +1135,9 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  providerOrder: Schema.Array(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1530,6 +1533,10 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  providerOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
+  moveModelFavorite: Schema.optionalKey(
+    Schema.Struct({ favorite: ModelFavorite, before: Schema.NullOr(ModelFavorite) }),
+  ),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

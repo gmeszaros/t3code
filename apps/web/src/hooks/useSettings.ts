@@ -544,7 +544,10 @@ export function useEnvironmentModelPreferences(environmentId: EnvironmentId | nu
   const legacy = useClientSettingsValue();
   useMigrateModelPreferences(environmentId, settings);
   return useMemo(
-    () => resolveModelPreferences(settings ?? DEFAULT_SERVER_SETTINGS, legacy),
+    () => ({
+      ...resolveModelPreferences(settings ?? DEFAULT_SERVER_SETTINGS, legacy),
+      providerOrder: settings?.providerOrder ?? DEFAULT_SERVER_SETTINGS.providerOrder,
+    }),
     [legacy, settings],
   );
 }

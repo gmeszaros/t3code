@@ -6,6 +6,7 @@ import type { ModelOption } from "../../lib/modelOptions";
 import {
   canCommitPendingModel,
   favoritesFirst,
+  orderedFavoriteModels,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
 } from "./thread-settings-sheet-state";
@@ -53,6 +54,30 @@ describe("thread settings sheet state", () => {
       "second",
       "third",
       "fourth",
+    ]);
+  });
+
+  it("follows saved favorite order across instances, preserving selections and provider identity", () => {
+    const work = modelOption("sol");
+    const personal = {
+      ...work,
+      key: "codex_personal:sol",
+      providerKey: "codex_personal",
+      providerLabel: "Personal",
+      selection: { ...work.selection, instanceId: ProviderInstanceId.make("codex_personal") },
+    };
+    const other = modelOption("luna");
+    const groups = [
+      { providerKey: "codex", providerLabel: "Work", models: [work, other] },
+      { providerKey: "codex_personal", providerLabel: "Personal", models: [personal] },
+    ];
+    const favorites = new Set([personal.key, other.key, work.key, "removed:sol"]);
+    const ordered = orderedFavoriteModels(groups, favorites, "");
+    expect(ordered.map((model) => model.key)).toEqual([personal.key, other.key, work.key]);
+    expect(ordered[0]?.selection).toBe(personal.selection);
+    expect(ordered[0]?.subtitle).toBe("Personal");
+    expect(orderedFavoriteModels(groups, favorites, "personal").map((model) => model.key)).toEqual([
+      personal.key,
     ]);
   });
 

@@ -44,6 +44,15 @@ describe("supportsSharedSettingsSync", () => {
 });
 
 describe("splitSharedServerPatch", () => {
+  it("keeps provider and favorite order scoped to the destination environment", () => {
+    const provider = ProviderInstanceId.make("codex_work");
+    const patch = {
+      providerOrder: [provider],
+      moveModelFavorite: { favorite: { provider, model: "sol" }, before: null },
+    };
+    expect(splitSharedServerPatch(patch)).toEqual({ sharedPatch: {}, localPatch: patch });
+  });
+
   it("keeps project overrides local: project ids belong to one environment", () => {
     const patch = {
       projectSettingsOverrides: { [ProjectId.make("project")]: { defaultAutoPull: true } },
