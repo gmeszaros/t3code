@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 
 // Operates only on a disposable, clean checkout. Published branches are never rewritten.
-export function rebaseLocalUpdate({ cwd, localSha, baseSha, upstreamSha }) {
+export function mergeLocalUpdate({ cwd, localSha, baseSha, upstreamSha }) {
   const git = (...args) =>
     NodeChildProcess.execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
   for (const sha of [localSha, baseSha, upstreamSha]) {
@@ -15,9 +15,6 @@ export function rebaseLocalUpdate({ cwd, localSha, baseSha, upstreamSha }) {
   git("merge-base", "--is-ancestor", baseSha, localSha);
   git("merge-base", "--is-ancestor", baseSha, upstreamSha);
   if (baseSha === upstreamSha) throw new Error("No newer upstream release to integrate");
-  if (git("rev-list", "--merges", `${baseSha}..${localSha}`)) {
-    throw new Error("Local patch series must be linear");
-  }
   git("switch", "--detach", localSha);
   try {
     git(
@@ -25,17 +22,17 @@ export function rebaseLocalUpdate({ cwd, localSha, baseSha, upstreamSha }) {
       "core.hooksPath=/dev/null",
       "-c",
       "rerere.enabled=false",
-      "rebase",
-      "--no-fork-point",
-      "--onto",
+      "merge",
+      "--no-ff",
+      "--no-edit",
       upstreamSha,
-      baseSha,
     );
   } catch (error) {
-    git("rebase", "--abort");
+    git("merge", "--abort");
     throw error;
   }
   git("merge-base", "--is-ancestor", upstreamSha, "HEAD");
+  git("merge-base", "--is-ancestor", localSha, "HEAD");
   return git("rev-parse", "HEAD");
 }
 
@@ -48,7 +45,7 @@ if (import.meta.main) {
     },
   });
   console.log(
-    rebaseLocalUpdate({
+    mergeLocalUpdate({
       cwd: process.cwd(),
       localSha: values.local,
       baseSha: values.base,

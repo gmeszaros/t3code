@@ -2,7 +2,7 @@
 
 ## Repository decision (2026-10-14)
 
-Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` identical to upstream. The `local` branch contains the linear Local patch series above `main`. Create feature PRs against `local`, so their diffs contain only the feature changes.
+Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` at the selected published upstream nightly commit. The `local` branch preserves our feature commits and merges updated `main` without rewriting history. Create feature PRs against `local`, so their diffs contain only the feature changes.
 
 The previous `gmeszaros/t3code-local` repository was deleted. The installed app and its profile remain unchanged. Both release checks and download links use this fork.
 
@@ -16,21 +16,24 @@ Use `--output-dir <directory>` to keep artifacts outside the checkout.
 
 ### Local changes and upstream updates
 
-Create feature worktrees from the latest hosted `local` and open feature PRs against `local`. Use squash or rebase merge to keep the Local patch series linear.
+Create feature worktrees from the latest hosted `local` and open feature PRs against `local`. Use squash merge for feature PRs. Upstream integrations use merge commits and preserve existing Local history.
 
-Update the fork's clean `main` with GitHub **Sync fork** or `gh repo sync gmeszaros/t3code --branch main`. This does not require a separate sync token. Keep Local changes off `main`.
+The `Local upstream update` workflow fast-forwards the fork's clean `main` to
+the latest published upstream nightly, then merges that exact revision into a
+disposable candidate based on `local`. This preserves the identity of every Local
+commit, including earlier integration merges. No rebase or force-push is used.
+GitHub's **Sync fork** follows upstream branch HEAD instead of a release tag;
+use the workflow when the published nightly is the required boundary.
 
-For a Local update, use a clean worktree and the existing authenticated GitHub CLI. Fetch the fork, record the old `local` tip, and rebase only its Local commits onto the tracked `main`:
+A sync is allowed only when the existing fork `main` is an ancestor of the selected
+nightly. Diverged or newer fork history stops the workflow without rewriting it.
+After synchronization, `main` remains updated even if the candidate later conflicts
+or fails verification. Conflicts require a reviewed resolution; do not discard
+Local changes or automatically choose one side.
 
-```bash
-git fetch fork main local
-git switch -c update/local fork/local
-git rebase fork/main
-```
-
-Resolve conflicts and run scoped checks before publication. Preserve the old Local tip in a backup tag and push `HEAD:refs/heads/local` with an explicit `--force-with-lease=refs/heads/local:<old-local-sha>` after approval for that history rewrite. Verify that hosted `main` is an ancestor of hosted `local` and that `main..local` contains no merge commits. No upstream integration PR is needed.
-
-Feature branches based on an older Local tip may need `git rebase --onto fork/local <previous-local-tip> <feature-branch>` after the update. The former scheduled mirror workflow is not used in this fork. Upstream sync and Local rebase remain explicit operations through the existing GitHub authentication.
+Feature PRs contain only feature/workflow changes and target `local`. Upstream
+integration is a merge performed by the update pipeline, not a rebased patch
+series or an upstream integration PR.
 
 The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 
@@ -43,28 +46,30 @@ The app checks the latest published Local release and opens its download page fr
 ### Preparing an upstream integration in Actions
 
 `Local upstream update` is the first stage of the upstream update pipeline. Run it
-against `local`, select an upstream release tag (or leave it empty for the latest
-published nightly), and leave `publish_release` off for an artifact-only trial.
-The workflow rejects older or unchanged upstream bases, non-linear Local history,
-and rebase conflicts. Stable and preview releases are excluded from automatic selection. An explicit
-release tag remains available for controlled trials; downgrade checks still apply.
+against `local`, select a published upstream release tag (or leave it empty for the
+latest nightly), and leave `publish_release` off for an artifact-only trial.
+Stable and preview releases are excluded from automatic selection. Downgrade
+and conflict checks still apply to explicitly selected tags.
 
-The candidate replays the Local patch series in a disposable checkout, runs scoped
-integration tests and typechecks, then builds and verifies the macOS arm64 app.
-The artifact includes the ZIP, checksum manifest and a Git bundle of the exact
-candidate source. Build steps have read-only repository permissions.
+The synchronization job only performs a fast-forward of `main`. The build job has
+read-only repository permissions, merges synchronized `main` into a disposable
+Local candidate, runs scoped integration tests and typechecks, then builds and
+verifies the macOS arm64 app. The artifact includes the ZIP, checksum manifest
+and a Git bundle of the exact candidate source. An artifact-only trial updates
+`main` but leaves `local`, releases and the installed app unchanged.
 
 With `publish_release` enabled, a separate job verifies the candidate and checksum,
-checks that `local` has not moved, and publishes an immutable `updates/local-*`
-branch and a latest Local release. It never force-pushes or updates `main` or
-`local`. A failed build publishes nothing. Publication failures can leave an
-immutable candidate branch, tag or draft release for inspection; inspect those
+checks that `local` has not moved, and requires both the original Local tip and
+upstream nightly to remain ancestors. It atomically pushes an immutable
+`updates/local-*` branch and fast-forwards `local` to the verified merge, then
+publishes a latest Local release. No history is rewritten. A failed build leaves
+`local` unchanged and publishes nothing. Publication failures can leave a verified
+Local update, candidate branch, tag or draft release for inspection; inspect those
 before retrying. Existing releases are never overwritten.
 
-Before continuing development from a published candidate, reconcile it with the
-maintained Local branch under a separate history-update approval. Until then,
-subsequent runs still replay the current `local` patch series. Download and install
-remain manual; the app does not dispatch this workflow yet.
+Further feature work starts from the updated `local`; its original feature commits
+remain in history. Download and install remain manual; the app does not dispatch
+this workflow yet.
 
 GitHub requires a dispatchable workflow to exist on the default branch. Keeping
 `main` identical to upstream therefore requires setting the fork's default branch
