@@ -9,7 +9,7 @@ import { expect, it } from "@effect/vitest";
 
 import * as ZCodeRuntime from "./ZCodeRuntime.ts";
 
-// Live tests require explicit opt-in because they use the native account and quota.
+// Native runtime tests require opt-in. Only the model-turn test uses the native account and quota.
 // Vitest collects this module without an Effect runtime, so the skip decision
 // does a plain probe of the well-known app-bundle locations.
 function probeExists(candidate: string): boolean {
@@ -26,6 +26,57 @@ const runtimeBundlePresent = (): boolean =>
   ].some(probeExists);
 
 const runtimeInstalled = runtimeBundlePresent();
+
+it.live.skipIf(process.env.T3CODE_ZCODE_PROTOCOL_SMOKE !== "1")(
+  "creates, subscribes, lists, resumes and closes an isolated session without a model call",
+  () =>
+    Effect.gen(function* () {
+      expect(
+        runtimeInstalled,
+        "Install the official ZCode bundle before running this smoke check",
+      ).toBe(true);
+      const runtime = yield* ZCodeRuntime.resolveZCodeRuntime({});
+      expect(runtime.kind).toBe("app-bundle");
+      const fs = yield* FileSystem.FileSystem;
+      const dataDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zcode-protocol-" });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zcode-workspace-" });
+      const scope = yield* Scope.fork(yield* Scope.Scope);
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const spawned = yield* ZCodeRuntime.spawnZCodeAppServer({
+        runtime,
+        cwd: workspaceDir,
+        // Supply only the isolated storage root and system process settings, never an account.
+        environment: {
+          PATH: process.env.PATH,
+          TMPDIR: process.env.TMPDIR,
+          ZCODE_DATA_BASE_DIR: dataDir,
+        },
+        spawner,
+        scope,
+      });
+      expect(yield* spawned.client.runtimeCapabilities()).toBeDefined();
+      const workspace = { workspacePath: workspaceDir, workspaceKey: workspaceDir };
+      const created = yield* spawned.client.sessionCreate({
+        workspace,
+        mode: "build",
+        persistence: "immediate",
+        titleGenerationEnabled: false,
+      });
+      const sessionId = created.session?.sessionId;
+      expect(sessionId).toMatch(/^sess_/);
+      if (!sessionId) return yield* Effect.die("Native runtime did not create a session");
+      yield* spawned.client.sessionSubscribe({ sessionId, deliveryKind: "desktop-continuous" });
+      const listed = yield* spawned.client.sessionList({ workspace });
+      expect(listed.sessions.some((session) => session.sessionId === sessionId)).toBe(true);
+      yield* spawned.client.sessionResume({ sessionId, workspace });
+      yield* spawned.client.sessionClose({ sessionId });
+      const childPid = spawned.client.pid;
+      expect(childPid).toBeDefined();
+      yield* spawned.terminate;
+      expect(() => process.kill(childPid!, 0)).toThrow();
+    }).pipe(Effect.timeout("30 seconds"), Effect.scoped, Effect.provide(NodeServices.layer)),
+  { timeout: 40_000 },
+);
 
 it.layer(NodeServices.layer)("ZCode app-server client (live runtime)", (it) => {
   it.effect.skipIf(process.env.T3CODE_ZCODE_LIVE_TESTS !== "1")(
