@@ -4,7 +4,7 @@
 
 Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` at the selected published upstream nightly commit. The `local` branch preserves our feature commits and merges updated `main` without rewriting history. Create feature PRs against `local`, so their diffs contain only the feature changes.
 
-The previous `gmeszaros/t3code-local` repository was deleted. The installed app and its profile remain unchanged. Both release checks and download links use this fork.
+The fork is public and its default branch is `local`. Both release checks and download links use this fork. Keep the reviewed Local build and update workflows available on that default branch so GitHub can dispatch them.
 
 ## Build, release and synchronization workflow
 
@@ -39,9 +39,22 @@ The build fetches upstream main and records its real merge base with the source 
 
 The `Local desktop build` workflow builds and verifies a self-contained macOS arm64 app on the standard `macos-15` runner. Push a `v<base>-local.<UTC-date>.<UTC-time>` tag pointing to a merged commit on `local` to build that exact version. The workflow uploads the ZIP and manifest to a draft release, then publishes it as latest. No local packaging or manual asset upload is required. Existing releases are never overwritten.
 
-The tag trigger uses the workflow from the tagged commit, so `main` stays identical to upstream. The optional `workflow_dispatch` entry remains for a future default-branch setup; GitHub cannot dispatch it manually while the file only exists on `local`. The inherited upstream release workflow excludes Local tags.
+The tag trigger uses the workflow from the tagged commit, so `main` stays identical to upstream. Manual dispatch is available because the workflows exist on the default `local` branch. The inherited upstream release workflow excludes Local tags.
 
 The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire; the workflow's intermediate artifact is retained for one day.
+
+### Building a feature branch without publishing
+
+Commit and run the scoped checks for the change, then push its feature branch to `gmeszaros/t3code`. Dispatch the Local workflow against that branch with release publication disabled:
+
+```bash
+gh workflow run local-desktop.yml --repo gmeszaros/t3code --ref feature/my-change -f publish_release=false
+gh run list --repo gmeszaros/t3code --workflow local-desktop.yml --branch feature/my-change --event workflow_dispatch
+```
+
+Verify that the selected run's `headSha` matches the reviewed commit and that the build finishes successfully. Download its Actions artifact, which contains the app ZIP and `.build.json` checksum manifest. The artifact expires after one day. Record the run URL, source revision and version in the task that owns the change.
+
+This path does not merge the feature branch, change `local`, create a release or install the app. Approval to push and build alone does not authorize those later operations. A successful build verifies packaging, signature and shipped revision. Verify the changed behavior on the destination Mac separately before describing it as fixed.
 
 ### Preparing an upstream integration in Actions
 
@@ -71,11 +84,7 @@ Further feature work starts from the updated `local`; its original feature commi
 remain in history. Download and install remain manual; the app does not dispatch
 this workflow yet.
 
-GitHub requires a dispatchable workflow to exist on the default branch. Keeping
-`main` identical to upstream therefore requires setting the fork's default branch
-to `local` after merging this workflow. That repository setting is a separate
-approved activation step. No PAT, signing secret, schedule or self-hosted runner
-is required.
+GitHub requires a dispatchable workflow to exist on the default branch. The fork uses `local` as that default so `main` can remain identical to upstream. Preserve this setting when maintaining the workflows. No PAT, signing secret, schedule or self-hosted runner is required.
 
 ### Publishing a verified Local release
 
@@ -89,13 +98,15 @@ git push fork "refs/tags/v<version>"
 
 Follow **Actions > Local desktop build**. Download the app ZIP from the resulting GitHub release. Both the tag and the source revision must pass the workflow's checks before publication. The manifest records the source revision and ZIP checksum. The workflow uses GitHub's short-lived token; no personal API key, signing credential or workstation profile is needed.
 
+Alternatively, after merging the reviewed change and approving release publication, dispatch `local-desktop.yml` against `local` with `publish_release=true`. That builds the exact selected Local revision, assigns a new version and publishes the verified ZIP and manifest. Publication from a feature branch is not supported. Inspect existing tags, releases and workflow runs before retrying a failed publication.
+
 Local packaging remains available as a fallback with `node scripts/build-local-desktop.mjs --output-dir release-local`. If publishing that output manually, upload both the versioned ZIP and its `.build.json` to a draft release targeting the manifest's `sourceSha`, then publish it as latest.
 
 Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
 Keep unrelated inherited upstream workflows disabled. Enable the reviewed Local workflow when publishing its setup; leave `main` unchanged. The Local workflow does not use the upstream Blacksmith runner labels.
 
-No scheduled credential or `UPSTREAM_SYNC_TOKEN` is configured for this fork. Native fork synchronization and locally authenticated rebasing replace the former standalone mirror updater.
+No scheduled credential or `UPSTREAM_SYNC_TOKEN` is required for this fork. The update workflow uses GitHub's short-lived token to synchronize `main` and preserve Local history through a verified merge.
 
 The downloaded Actions artifact contains an app ZIP. Extract that ZIP, keep
 the previous app for rollback, and install `T3 Code (Local).app`. The manifest
@@ -120,6 +131,12 @@ identity, entitlements and signature; actual GUI automation/CUA must be tested
 on the destination Mac. Entitlement-gated browser passkeys are not supplied by
 ad-hoc signing. Developer ID, notarization and provisioning are a separate
 setup requiring credentials and a profile authorized for the Local app ID.
+
+### Public source and artifacts
+
+Before pushing new source, inspect tracked files and scan the proposed revision and Local-specific history for credentials. Include retained tags when they expose older Local commits. Review scanner findings individually because vendored test fixtures and public client identifiers can resemble secrets. `.gitignore` prevents accidental additions but does not remove files or credentials already committed. Keep reusable dev credentials and pairing URLs out of source, logs and release notes. See [Reusable dev credential](development.md#reusable-dev-credential).
+
+Keep GitHub secret scanning and push protection enabled. Review active workflows after upstream synchronization, especially scheduled jobs and jobs with write permissions. Enable only the workflows required for this fork. Keep runtime profiles, authentication files and user databases outside build inputs. Artifact signature and revision verification does not replace a secret scan or verification of the changed behavior.
 
 Standard GitHub-hosted runner use is free for public repositories. Private
 repositories consume the owner's included allowance, with charges beyond it;
