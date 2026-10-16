@@ -6424,6 +6424,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "usage_limit",
     },
     { name: "retry", code: "usageLimitExceeded", notification: true, expectedClass: "usage_limit" },
+    ...(
+      [
+        "fetched-reset",
+        "fetched-multi-bucket",
+        "read-failed",
+        "read-timeout",
+        "read-no-reset",
+      ] as const
+    ).map(
+      (name) =>
+        ({
+          name,
+          code: "usageLimitExceeded",
+          notification: false,
+          expectedClass: "usage_limit",
+        }) as const,
+    ),
   ] as const)("classifies Codex terminal failures from $name evidence", (scenario) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -6531,6 +6548,34 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               },
             },
             ...(scenario.name === "late-reset" ? [snapshot] : []),
+            ...(scenario.expectedClass === "usage_limit" &&
+            !["known-reset", "deferred-reset", "read-timeout"].includes(scenario.name)
+              ? [
+                  {
+                    type: "expect_outbound" as const,
+                    frame: { id: 4, method: "account/rateLimits/read", params: null },
+                  },
+                  {
+                    type: "emit_inbound" as const,
+                    frame: !["fetched-reset", "fetched-multi-bucket", "read-no-reset"].includes(
+                      scenario.name,
+                    )
+                      ? { id: 4, error: { code: -32603, message: "Usage unavailable." } }
+                      : {
+                          id: 4,
+                          result: {
+                            rateLimits:
+                              scenario.name === "fetched-reset"
+                                ? snapshot.frame.params.rateLimits
+                                : { limitId: "codex", primary: null, secondary: null },
+                            ...(scenario.name === "fetched-multi-bucket"
+                              ? { rateLimitsByLimitId: { codex: snapshot.frame.params.rateLimits } }
+                              : {}),
+                          },
+                        },
+                  },
+                ]
+              : []),
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -6568,12 +6613,30 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ],
         });
         const resetReceipt = yield* Deferred.make<void>();
-        const harness = yield* makeCodexReplayHarness(transcript, (event) =>
-          event.type === "turn_item.updated" &&
-          event.turnItem.type === "error" &&
-          event.turnItem.failure.resetAt === resetAt
-            ? Deferred.succeed(resetReceipt, undefined)
-            : Effect.void,
+        const readStarted = yield* Deferred.make<void>();
+        const readStopped = yield* Deferred.make<void>();
+        let reads = 0;
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.failure.resetAt === resetAt
+              ? Deferred.succeed(resetReceipt, undefined)
+              : Effect.void,
+          (method) =>
+            method === "account/rateLimits/read"
+              ? Effect.sync(() => {
+                  reads++;
+                }).pipe(
+                  Effect.andThen(Deferred.succeed(readStarted, undefined)),
+                  Effect.andThen(
+                    scenario.name === "read-timeout"
+                      ? Effect.never.pipe(Effect.ensuring(Deferred.succeed(readStopped, undefined)))
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
         );
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({
@@ -6584,6 +6647,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             attemptId: RunAttemptId.make(`attempt-limit-${scenario.name}`),
           }),
         );
+        if (scenario.name === "read-timeout") {
+          yield* Deferred.await(readStarted);
+          yield* harness.firstTerminal;
+          yield* TestClock.adjust("2 seconds");
+          yield* Deferred.await(readStopped);
+        }
+        if (["fetched-reset", "fetched-multi-bucket"].includes(scenario.name))
+          yield* Deferred.await(resetReceipt);
+        if (["read-failed", "read-no-reset"].includes(scenario.name))
+          yield* Deferred.await(readStarted);
         yield* harness.firstTerminal;
         const terminal = harness.terminalEvents()[0];
         assert.equal(terminal?.status, "failed");
@@ -6592,6 +6665,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(terminal.threadDisposition, "reusable");
         if (scenario.name === "known-reset" || scenario.name === "deferred-reset")
           assert.equal(terminal.failure.resetAt, resetAt);
+        if (scenario.name === "fetched-reset" || scenario.name === "fetched-multi-bucket") {
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.failure.resetAt === resetAt,
+            ),
+          );
+          assert.equal(reads, 1);
+        }
+        if (
+          scenario.name === "read-failed" ||
+          scenario.name === "read-timeout" ||
+          scenario.name === "read-no-reset"
+        ) {
+          assert.isNull(terminal.failure.resetAt);
+          assert.equal(reads, 1);
+          assert.equal(terminal.failure.message, message);
+        }
+        if (scenario.name === "known-reset" || scenario.expectedClass === "provider_error")
+          assert.equal(reads, 0);
         if (scenario.name === "matching-details")
           assert.equal(terminal.failure.message, "Detailed provider allowance explanation.");
         if (scenario.name === "late-reset") {
