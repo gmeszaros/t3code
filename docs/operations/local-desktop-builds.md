@@ -132,6 +132,8 @@ on the destination Mac. Entitlement-gated browser passkeys are not supplied by
 ad-hoc signing. Developer ID, notarization and provisioning are a separate
 setup requiring credentials and a profile authorized for the Local app ID.
 
+For native ZCode runtime updates, complete the separate [compatibility review](zcode-runtime-compatibility.md) before recommending adoption.
+
 ### Public source and artifacts
 
 Before pushing new source, inspect tracked files and scan the proposed revision and Local-specific history for credentials. Include retained tags when they expose older Local commits. Review scanner findings individually because vendored test fixtures and public client identifiers can resemble secrets. `.gitignore` prevents accidental additions but does not remove files or credentials already committed. Keep reusable dev credentials and pairing URLs out of source, logs and release notes. See [Reusable dev credential](development.md#reusable-dev-credential).
