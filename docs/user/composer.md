@@ -89,6 +89,10 @@ Space, use the arrow keys, then press Space to save or Escape to cancel.
 Both orders are saved on the selected environment and shared with its connected clients.
 Model picker shortcuts follow the visible model order.
 
+On mobile, choose an Antigravity Gemini base model, then set its **Reasoning**
+level. Favorites retain the exact variant you saved. Search and hidden-model
+management also show the individual variants.
+
 ## Custom models
 
 On web and desktop, use Settings → Providers → **Models** to add an unlisted model with a custom

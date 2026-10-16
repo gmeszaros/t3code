@@ -5,6 +5,9 @@ import { ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contr
 import type { ModelOption } from "../../lib/modelOptions";
 import {
   canCommitPendingModel,
+  collapseGeminiReasoningModels,
+  geminiReasoningDescriptor,
+  selectGeminiReasoningModel,
   favoritesFirst,
   orderedFavoriteModels,
   modelMatchesCatalogQuery,
@@ -173,5 +176,125 @@ describe("thread settings sheet state", () => {
         },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("Gemini reasoning in the mobile picker", () => {
+  const gemini = (slug: string, level: string, instance = "google"): ModelOption => ({
+    ...modelOption(slug),
+    key: `${instance}:${slug}`,
+    label: `Gemini 3.1 Pro (${level})`,
+    providerKey: instance,
+    providerDriver: "antigravity",
+    selection: { instanceId: ProviderInstanceId.make(instance), model: slug },
+  });
+  const high = { ...gemini("gemini-pro-agent", "High"), isDefault: true };
+  const low = gemini("gemini-3.1-pro-low", "Low");
+
+  it("shows one base model while retaining an applied non-default native slug", () => {
+    const catalog = [high, low, modelOption("gpt-next")];
+    const collapsed = collapseGeminiReasoningModels(catalog, low.selection, new Set());
+    expect(collapsed.map((model) => model.label)).toEqual(["Gemini 3.1 Pro", "gpt-next"]);
+    expect(collapsed[0]?.selection).toBe(low.selection);
+    expect(catalog).toEqual([high, low, modelOption("gpt-next")]);
+    expect(collapseGeminiReasoningModels(catalog, null, new Set())[0]?.selection).toBe(
+      high.selection,
+    );
+    expect(geminiReasoningDescriptor(collapsed[0]!, catalog)).toMatchObject({
+      label: "Reasoning",
+      currentValue: low.selection.model,
+      options: [
+        { id: high.selection.model, label: "High" },
+        { id: low.selection.model, label: "Low" },
+      ],
+    });
+  });
+
+  it("keeps provider instances separate and supports labels without parentheses", () => {
+    const personalHigh = gemini("gemini-pro-agent", "High", "personal");
+    const personalLow = {
+      ...gemini("gemini-3.1-pro-low", "Low", "personal"),
+      label: "Gemini 3.1 Pro Low",
+    };
+    const models = [high, low, personalHigh, personalLow];
+    expect(
+      collapseGeminiReasoningModels(models, personalLow.selection, new Set()).map(
+        (model) => model.key,
+      ),
+    ).toEqual([high.key, personalLow.key]);
+    expect(
+      selectGeminiReasoningModel(high, [high, personalLow], personalLow.selection.model),
+    ).toBeNull();
+  });
+
+  it("does not combine unrelated, single, ambiguous or unavailable models", () => {
+    const otherProvider = { ...low, providerDriver: "opencode" };
+    expect(collapseGeminiReasoningModels([high, otherProvider], null, new Set())).toEqual([
+      high,
+      otherProvider,
+    ]);
+    const duplicate = {
+      ...high,
+      key: "google:duplicate",
+      selection: { ...high.selection, model: "duplicate" },
+    };
+    const ambiguous = [high, duplicate, low];
+    expect(collapseGeminiReasoningModels(ambiguous, null, new Set())).toEqual(ambiguous);
+    const unavailable = { ...low, isUnavailable: true };
+    expect(geminiReasoningDescriptor(high, [high, unavailable])).toBeNull();
+    expect(selectGeminiReasoningModel(high, [high, unavailable], low.selection.model)).toBeNull();
+    expect(geminiReasoningDescriptor(high, [high])).toBeNull();
+  });
+
+  it("switches the native model, preserving only supported native options", () => {
+    const capability = {
+      optionDescriptors: [
+        {
+          id: "nativeMode",
+          label: "Native mode",
+          type: "select" as const,
+          options: [{ id: "safe", label: "Safe" }],
+          currentValue: "safe",
+        },
+      ],
+    };
+    const current = {
+      ...high,
+      selection: {
+        ...high.selection,
+        options: [
+          { id: "nativeMode", value: "safe" },
+          { id: "removed", value: "old" },
+        ],
+      },
+    };
+    const target = { ...low, capabilities: capability };
+    const next = selectGeminiReasoningModel(current, [high, target], low.selection.model)!;
+    expect(next.selection).toEqual({
+      ...low.selection,
+      options: [{ id: "nativeMode", value: "safe" }],
+    });
+    expect(next.key).toBe(low.key);
+    expect(
+      selectGeminiReasoningModel(current, [high, low], low.selection.model)?.selection.options,
+    ).toBeUndefined();
+    expect(selectGeminiReasoningModel(current, [high, low], "invented-model")).toBeNull();
+    expect(
+      canCommitPendingModel(next, [
+        { providerKey: "google", providerLabel: "Google", models: [high] },
+      ]),
+    ).toBe(false);
+  });
+
+  it("keeps exact favorite variants and hidden model controls available", () => {
+    const models = [high, low];
+    const groups = [{ providerKey: "google", providerLabel: "Google", models }];
+    const favorites = new Set([low.key, high.key]);
+    expect(orderedFavoriteModels(groups, favorites, "").map((model) => model.key)).toEqual([
+      low.key,
+      high.key,
+    ]);
+    const hidden = { ...low, isHidden: true };
+    expect(collapseGeminiReasoningModels([high, hidden], null, favorites)).toEqual([high, hidden]);
   });
 });
