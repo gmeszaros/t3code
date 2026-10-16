@@ -97,6 +97,10 @@ import {
 } from "./thread-settings-options";
 import {
   canCommitPendingModel,
+  collapseGeminiReasoningModels,
+  GEMINI_REASONING_DESCRIPTOR_ID,
+  geminiReasoningDescriptor,
+  selectGeminiReasoningModel,
   favoritesFirst,
   orderedFavoriteModels,
   modelFavoriteKey,
@@ -532,18 +536,6 @@ function ThreadSettingsSessionProvider(
   // While a model is staged, the settings rows describe and edit the staged
   // model's options (kept on its pending selection); Save applies model and
   // options together. Otherwise they edit the applied selection directly.
-  const displayedDescriptors = useMemo(
-    () =>
-      pendingModel
-        ? pendingModel.capabilities
-          ? getProviderOptionDescriptors({
-              caps: pendingModel.capabilities,
-              selections: pendingModel.selection.options,
-            })
-          : []
-        : props.optionDescriptors,
-    [pendingModel, props.optionDescriptors],
-  );
   const displayedModel = useMemo(
     () =>
       pendingModel ??
@@ -551,6 +543,26 @@ function ThreadSettingsSessionProvider(
       null,
     [isApplied, pendingModel, props.providerGroups],
   );
+  const displayedProviderModels = useMemo(
+    () =>
+      providerGroups.find((group) => group.providerKey === displayedModel?.providerKey)?.models ??
+      [],
+    [displayedModel?.providerKey, providerGroups],
+  );
+  const displayedDescriptors = useMemo(() => {
+    const nativeDescriptors = pendingModel
+      ? pendingModel.capabilities
+        ? getProviderOptionDescriptors({
+            caps: pendingModel.capabilities,
+            selections: pendingModel.selection.options,
+          })
+        : []
+      : props.optionDescriptors;
+    const reasoning = displayedModel
+      ? geminiReasoningDescriptor(displayedModel, displayedProviderModels)
+      : null;
+    return reasoning ? [reasoning, ...nativeDescriptors] : nativeDescriptors;
+  }, [pendingModel, props.optionDescriptors, displayedModel, displayedProviderModels]);
   const runtimeModeChoices = runtimeModeChoicesForSupportedModes(
     displayedModel?.supportedRuntimeModes,
   );
@@ -580,7 +592,23 @@ function ThreadSettingsSessionProvider(
 
   const applyOptionChange = useCallback(
     (id: string, value: string | boolean) => {
-      const next = applyProviderOptionSelection(displayedDescriptors, { id, value });
+      if (id === GEMINI_REASONING_DESCRIPTOR_ID) {
+        const nextModel =
+          displayedModel && typeof value === "string"
+            ? selectGeminiReasoningModel(displayedModel, displayedProviderModels, value)
+            : null;
+        if (nextModel) {
+          if (pendingModel) setPendingModel(nextModel);
+          else props.onSelectModel(nextModel);
+        }
+        return;
+      }
+      const next = applyProviderOptionSelection(
+        displayedDescriptors.filter(
+          (descriptor) => descriptor.id !== GEMINI_REASONING_DESCRIPTOR_ID,
+        ),
+        { id, value },
+      );
       if (!next) {
         return;
       }
@@ -594,7 +622,7 @@ function ThreadSettingsSessionProvider(
         props.onUpdateOptionSelections(next);
       }
     },
-    [displayedDescriptors, pendingModel, props.onUpdateOptionSelections],
+    [displayedDescriptors, displayedModel, displayedProviderModels, pendingModel, props],
   );
 
   const toggleProvider = useCallback((providerKey: string) => {
@@ -815,10 +843,18 @@ function useThreadSettingsCatalogItems(
         return [];
       }
       const driver = group.models[0]?.providerDriver ?? group.providerKey;
+      const catalogSource =
+        session.manageHidden || session.searchQuery.trim()
+          ? group.models
+          : collapseGeminiReasoningModels(
+              group.models,
+              session.displayedModelSelection,
+              session.favoriteKeys,
+            );
       const catalogModels =
         session.manageHidden || session.showLegacy
-          ? group.models
-          : group.models.filter(
+          ? catalogSource
+          : catalogSource.filter(
               (model) =>
                 !model.isLegacy ||
                 session.isDisplayed(model) ||
@@ -889,6 +925,7 @@ function useThreadSettingsCatalogItems(
   }, [
     session.isApplied,
     session.isDisplayed,
+    session.displayedModelSelection,
     session.favoriteKeys,
     session.providerExpansionOverrides,
     session.providerFilter,

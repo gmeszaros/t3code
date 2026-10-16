@@ -1,6 +1,14 @@
 import { sortBySavedOrder } from "@t3tools/shared/serverSettings";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  ProviderInstanceId,
+  ProviderOptionDescriptor,
+} from "@t3tools/contracts";
+import {
+  buildExplicitProviderOptionSelectionsFromDescriptors,
+  getProviderOptionDescriptors,
+} from "@t3tools/shared/model";
 
 export function modelFavoriteKey(provider: ProviderInstanceId, model: string): string {
   return `${provider}:${model}`;
@@ -97,4 +105,96 @@ export function providerSectionIsCollapsed(input: {
     return false;
   }
   return input.defaultExpanded ? input.hasExpansionOverride : !input.hasExpansionOverride;
+}
+
+// This descriptor belongs to the picker; dispatch still uses the native model slug.
+export const GEMINI_REASONING_DESCRIPTOR_ID = "t3:geminiReasoning";
+
+function geminiReasoning(model: ModelOption) {
+  if (model.providerDriver !== "antigravity") return null;
+  const match = /^(Gemini .+?)\s+\(?(Minimal|Low|Medium|High)\)?$/i.exec(model.label);
+  return match ? { family: match[1]!, level: match[2]! } : null;
+}
+
+function geminiReasoningVariants(model: ModelOption, models: ReadonlyArray<ModelOption>) {
+  const source = models.find((candidate) => candidate.key === model.key) ?? model;
+  if (source.isUnavailable || source.isHidden) return [];
+  const reasoning = geminiReasoning(source);
+  if (!reasoning) return [];
+  const variants = models.filter(
+    (candidate) =>
+      candidate.selection.instanceId === source.selection.instanceId &&
+      !candidate.isUnavailable &&
+      !candidate.isHidden &&
+      geminiReasoning(candidate)?.family === reasoning.family,
+  );
+  // Ambiguous catalog labels must remain individually selectable.
+  const levels = variants.map((variant) => geminiReasoning(variant)!.level.toLowerCase());
+  return variants.length > 1 && new Set(levels).size === variants.length ? variants : [];
+}
+
+/** Collapse only the catalog view; favorites and hidden-model management retain exact variants. */
+export function collapseGeminiReasoningModels(
+  models: ReadonlyArray<ModelOption>,
+  displayedSelection: ModelSelection | null | undefined,
+  favoriteKeys: ReadonlySet<string>,
+): ReadonlyArray<ModelOption> {
+  const seen = new Set<string>();
+  return models.flatMap((model) => {
+    if (seen.has(model.key)) return [];
+    const variants = geminiReasoningVariants(model, models);
+    if (!variants.length) return [model];
+    for (const variant of variants) seen.add(variant.key);
+    const selected =
+      variants.find(
+        (variant) =>
+          variant.selection.instanceId === displayedSelection?.instanceId &&
+          variant.selection.model === displayedSelection.model,
+      ) ??
+      variants.find((variant) => favoriteKeys.has(variant.key)) ??
+      variants.find((variant) => variant.isDefault) ??
+      variants[0]!;
+    return [{ ...selected, label: geminiReasoning(selected)!.family }];
+  });
+}
+
+export function geminiReasoningDescriptor(
+  model: ModelOption,
+  models: ReadonlyArray<ModelOption>,
+): ProviderOptionDescriptor | null {
+  const variants = geminiReasoningVariants(model, models);
+  return variants.length
+    ? {
+        id: GEMINI_REASONING_DESCRIPTOR_ID,
+        label: "Reasoning",
+        type: "select",
+        currentValue: model.selection.model,
+        options: variants.map((variant) => ({
+          id: variant.selection.model,
+          label: geminiReasoning(variant)!.level,
+          isDefault: variant.isDefault,
+        })),
+      }
+    : null;
+}
+
+export function selectGeminiReasoningModel(
+  current: ModelOption,
+  models: ReadonlyArray<ModelOption>,
+  slug: string,
+): ModelOption | null {
+  const target = geminiReasoningVariants(current, models).find(
+    (model) => model.selection.model === slug,
+  );
+  if (!target) return null;
+  const options = target.capabilities
+    ? buildExplicitProviderOptionSelectionsFromDescriptors(
+        getProviderOptionDescriptors({
+          caps: target.capabilities,
+          selections: current.selection.options,
+        }),
+        current.selection.options,
+      )
+    : undefined;
+  return { ...target, selection: { ...target.selection, options } };
 }
