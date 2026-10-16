@@ -8567,6 +8567,94 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
 
+    it.effect.each(["paused", "blocked"])(
+      "resumes a %s goal without replacing its objective, budget or accounting",
+      (status) =>
+        Effect.gen(function* () {
+          const goal = { ...codexGoal(status, 1200), tokenBudget: 9000 };
+          const activeGoal = { ...goal, status: "active" };
+          const transcript = makeCodexReplayTranscript({
+            scenario: `goal-resume-${status}`,
+            entries: [
+              ...sessionStart,
+              ...request(3, "thread/goal/get", { threadId: nativeThreadId }, { goal }),
+              ...withReplayRequestId(
+                codexReplayPreamble({
+                  nativeThreadId,
+                  nativeTurnId: "goal-resumed-turn",
+                  prompt: "unused",
+                })
+                  .slice(5)
+                  .map((entry) => {
+                    if (entry.type !== "expect_outbound") return entry;
+                    const frame = entry.frame;
+                    if (
+                      !Predicate.isObject(frame) ||
+                      !("method" in frame) ||
+                      frame.method !== "turn/start" ||
+                      !("params" in frame) ||
+                      !Predicate.isObject(frame.params)
+                    )
+                      return entry;
+                    return {
+                      ...entry,
+                      frame: { ...frame, params: { ...frame.params, input: [] } },
+                    };
+                  }),
+                4,
+              ),
+              ...request(
+                5,
+                "thread/goal/set",
+                { threadId: nativeThreadId, status: "active" },
+                {
+                  goal: activeGoal,
+                },
+              ),
+              notification("goal resumed", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-resumed-turn",
+                goal: activeGoal,
+              }),
+              notification("goal finished", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-resumed-turn",
+                goal: { ...activeGoal, status: "complete" },
+              }),
+              notification("resumed turn done", "turn/completed", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "goal-resumed-turn", status: "completed" }),
+              }),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "/goal resume"));
+          yield* harness.firstTerminal;
+          const goals = harness.events.flatMap((event) =>
+            event.type === "provider_thread.updated" && event.providerThread.goal
+              ? [event.providerThread.goal]
+              : [],
+          );
+          assert.include(providerGoals(harness.events), "active");
+          assert.deepInclude(goals, {
+            objective,
+            status: "complete",
+            tokenBudget: 9000,
+            tokensUsed: 1200,
+            timeUsedSeconds: 3,
+          });
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => event.status),
+            ["completed"],
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
     it.effect("settles /goal pause with a reply instead of a native turn", () =>
       Effect.gen(function* () {
         const transcript = makeCodexReplayTranscript({

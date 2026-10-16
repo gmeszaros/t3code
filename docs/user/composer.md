@@ -251,7 +251,9 @@ row above the composer shows the goal and its progress.
 
 - `/goal` alone shows the current goal. `/goal clear` removes it.
 - Codex also supports `/goal pause` and `/goal resume`. Stopping a Codex goal
-  pauses it.
+  pauses it. To continue a paused or blocked Codex goal, send `/goal resume`
+  or explicitly ask the agent to resume the current goal. This keeps its objective
+  and budget. When the agent queues the command, it takes effect after its reply.
 - Stopping Claude ends the current turn, but the goal stays set. Claude checks it
   again at the end of your next message.
 
