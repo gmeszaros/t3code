@@ -46,3 +46,15 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Root-level runtime copies, database exports and private-key exports.
+/userdata/
+/.t3-*/
+/*.sqlite
+/*.sqlite-*
+/*.db
+/*.db-*
+/*.key
+/*.pem
+/*.p12
+/*.pfx

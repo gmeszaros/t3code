@@ -104,7 +104,12 @@ Local packaging remains available as a fallback with `node scripts/build-local-d
 
 Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
-Keep unrelated inherited upstream workflows disabled. Enable the reviewed Local workflow when publishing its setup; leave `main` unchanged. The Local workflow does not use the upstream Blacksmith runner labels.
+Keep only `CI`, `Mobile Fingerprint Check`, `Local desktop build` and
+`Local upstream update` enabled for this fork. Keep unrelated inherited upstream
+workflows disabled, including scheduled Android builds and workflows requiring
+upstream credentials or Blacksmith runners. Review this allowlist after upstream
+synchronization; leave `main` unchanged. The Local workflows use standard GitHub
+runner labels.
 
 No scheduled credential or `UPSTREAM_SYNC_TOKEN` is required for this fork. The update workflow uses GitHub's short-lived token to synchronize `main` and preserve Local history through a verified merge.
 
@@ -138,7 +143,14 @@ For native ZCode runtime updates, complete the separate [compatibility review](z
 
 Before pushing new source, inspect tracked files and scan the proposed revision and Local-specific history for credentials. Include retained tags when they expose older Local commits. Review scanner findings individually because vendored test fixtures and public client identifiers can resemble secrets. `.gitignore` prevents accidental additions but does not remove files or credentials already committed. Keep reusable dev credentials and pairing URLs out of source, logs and release notes. See [Reusable dev credential](development.md#reusable-dev-credential).
 
-Keep GitHub secret scanning and push protection enabled. Review active workflows after upstream synchronization, especially scheduled jobs and jobs with write permissions. Enable only the workflows required for this fork. Keep runtime profiles, authentication files and user databases outside build inputs. Artifact signature and revision verification does not replace a secret scan or verification of the changed behavior.
+Keep GitHub secret scanning, push protection and dependency vulnerability alerts
+enabled. Review active workflows after upstream synchronization, especially
+scheduled jobs and jobs with write permissions. Enable only the workflows
+required for this fork. Root-level runtime copies, database and private-key
+exports are ignored; this does not cover arbitrary export names or remove
+existing history. Keep runtime profiles, authentication files and user databases
+outside build inputs. Artifact signature and revision verification does not
+replace a secret scan or verification of the changed behavior.
 
 Standard GitHub-hosted runner use is free for public repositories. Private
 repositories consume the owner's included allowance, with charges beyond it;
