@@ -104,8 +104,10 @@ Local packaging remains available as a fallback with `node scripts/build-local-d
 
 Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
-Keep only `CI`, `Mobile Fingerprint Check`, `Local desktop build` and
-`Local upstream update` enabled for this fork. Keep unrelated inherited upstream
+Keep `CI`, `Mobile Fingerprint Check`, `Local desktop build` and
+`Local upstream update` enabled as this fork's repository-owned workflows.
+GitHub's managed `Dependency Graph` workflow may also appear when dependency
+alerts are enabled. Keep unrelated inherited upstream
 workflows disabled, including scheduled Android builds and workflows requiring
 upstream credentials or Blacksmith runners. Review this allowlist after upstream
 synchronization; leave `main` unchanged. The Local workflows use standard GitHub
