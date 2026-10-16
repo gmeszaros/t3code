@@ -193,6 +193,11 @@ minimumReleaseAgeExclude:
   - "@muse-code/sdk@1.4.6"
 
 overrides:
+  # Patched releases for the Local fork's critical dependency and MCP OAuth advisories.
+  "shell-quote@>=1.8.4 <1.11.0": 1.11.0
+  "seroval@>=0.12.0 <=1.6.2": 1.6.3
+  "proxy-addr@>=1.1.0 <2.0.8": 2.0.8
+  "@modelcontextprotocol/sdk@>=1.12.0 <1.31.0": 1.31.0
   # Keep jsdom's optional peer consistent so Vite+ has one test-runner instance.
   "@exodus/bytes>@noble/hashes": "1.8.0"
   # Earlier React Navigation declarations create a circular type alias in TypeScript 7.
