@@ -14,6 +14,7 @@ import {
 } from "../../provider/CodexTurnTokenUsage.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
+import { watchCodexComputerUse } from "../../provider/CodexComputerUse.ts";
 import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
@@ -1574,9 +1575,16 @@ export const layerAppServerClientFactory: Layer.Layer<
                   logger: protocolLogger,
                 };
           const context = yield* Layer.build(CodexClient.layerChildProcess(handle, clientOptions));
-          return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+          const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
             Effect.provide(context),
           );
+          yield* watchCodexComputerUse({
+            client,
+            environment,
+            cwd: input.runtimePolicy.cwd ?? (yield* HostProcess.WorkingDirectory),
+            disconnected: handle.exitCode.pipe(Effect.ignore),
+          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+          return client;
         }),
     });
   }),
