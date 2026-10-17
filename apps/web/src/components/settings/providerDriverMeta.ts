@@ -14,15 +14,14 @@ import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
 
-/** The ZCode glyph as plain data; the detail stroke bakes the old 55% opacity into its fills. */
+/** The official Z.ai mark; evenodd knocks the Z out of the rounded square. */
 const zcodeIcon: ProviderIcon = {
-  viewBox: "0 0 24 24",
+  viewBox: "0 0 30 30",
   fill: { light: "#0F0F0F", dark: "#F5F5F5" },
   paths: [
-    { d: "M4.2 3h9.3l6.3 8.1-8.7 9.9H4.2l8.4-9.6L6.9 6H4.2V3z" },
     {
-      d: "M6.6 18.3h9.9V21H6.6v-2.7z",
-      fill: { light: "#7B7B7B", dark: "#919191" },
+      fillRule: "evenodd",
+      d: "M24.51 28.51H5.49c-2.21 0-4-1.79-4-4V5.49c0-2.21 1.79-4 4-4h19.03c2.21 0 4 1.79 4 4v19.03c0 2.21-1.79 4-4 4ZM15.47 7.1l-1.3 1.85c-.2.29-.54.47-.9.47h-7.1V7.09C6.16 7.1 15.47 7.1 15.47 7.1ZM24.3 7.1 13.14 22.91H5.7L16.86 7.1ZM14.53 22.91l1.31-1.86c.2-.29.54-.47.9-.47h7.09v2.33H14.53Z",
     },
   ],
 };
