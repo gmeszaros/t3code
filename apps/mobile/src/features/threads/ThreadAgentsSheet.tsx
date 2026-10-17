@@ -65,9 +65,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
       {subagents.length === 0 ? (
-        <Text className="pt-6 text-center text-sm text-foreground-muted">
-          No agents in this turn.
-        </Text>
+        <Text className="pt-6 text-center text-sm text-foreground-muted">No agents yet.</Text>
       ) : (
         subagents.map((subagent) => (
           <AgentRow
