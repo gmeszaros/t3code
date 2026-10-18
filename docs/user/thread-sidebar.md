@@ -114,8 +114,8 @@ open.
 
 ## Organize threads in folders
 
-On web and desktop, use a project's menu to create a thread folder, then use
-**Move to folder** in a thread's menu to place it. A folder's menu lets you
+On web and desktop, use **Move to folder > New folder** in a thread's menu to
+create a folder and place the thread in it. A folder's menu lets you
 rename it, create subfolders, or move it elsewhere in the same project.
 Removing a folder keeps its threads and subfolders under its parent, or
 ungrouped at the project root.
