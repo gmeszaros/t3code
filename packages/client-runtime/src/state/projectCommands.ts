@@ -203,6 +203,14 @@ export function createProjectEnvironmentAtoms<R, E>(
       scheduler: projectScheduler,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    // Organizational thread folder writes re-bucket the sidebar only; the
+    // server never dispatches a turn or touches a thread's run from them.
+    mutateThreadFolders: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:mutate-thread-folders",
+      tag: WS_METHODS.projectsMutateThreadFolders,
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
     writeFile: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:write-file",
       tag: WS_METHODS.projectsWriteFile,

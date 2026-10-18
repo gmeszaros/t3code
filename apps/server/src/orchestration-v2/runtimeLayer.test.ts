@@ -27,6 +27,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunId,
+  ThreadFolderId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -6048,3 +6049,169 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
     );
   },
 );
+
+it.layer(layerProjectDeletionTest)("thread folder service", (it) => {
+  it.effect("persists folder commands into the project row so fresh shell reads show them", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("runtime-folders-persist");
+      const threadId = ThreadId.make("runtime-folders-persist-thread");
+      const folderId = ThreadFolderId.make("runtime-folders-persist-folder");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-folders-persist-create"),
+        projectId,
+        title: "Folder persistence",
+        workspaceRoot: "/work/folders-persist",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-folders-persist-thread-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId,
+        projectId,
+        title: "Folder persistence thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+
+      const created = yield* projects.mutateThreadFolders({
+        type: "threadFolder.create",
+        commandId: CommandId.make("runtime-folders-persist-folder-create"),
+        projectId,
+        folderId,
+        title: "Research",
+      });
+      assert.equal(created.threadFolders.length, 1);
+      assert.equal(created.threadFolders[0]?.title, "Research");
+
+      const placed = yield* projects.mutateThreadFolders({
+        type: "threadFolder.placeThread",
+        commandId: CommandId.make("runtime-folders-persist-place"),
+        projectId,
+        threadId,
+        folderId,
+      });
+      assert.deepEqual(placed.threadFolders[0]?.threadIds, [threadId]);
+
+      // The shell is folded from the committed event in the same transaction,
+      // so this read is what a restart or another client would see.
+      const shell = Option.getOrThrow(yield* projects.getShell(projectId));
+      assert.equal(shell.threadFolders?.length, 1);
+      assert.deepEqual(shell.threadFolders?.[0]?.threadIds, [threadId]);
+
+      // Folder placement is organization only: the thread's own projection is
+      // untouched and no run was dispatched for the move.
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(projection.thread.title, "Folder persistence thread");
+      assert.isNull(projection.thread.deletedAt);
+      assert.equal(projection.runs.length, 0);
+    }),
+  );
+
+  it("rejects placement of a thread the project does not own", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const projectId = ProjectId.make("runtime-folders-foreign");
+      const folderId = ThreadFolderId.make("runtime-folders-foreign-folder");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-folders-foreign-create"),
+        projectId,
+        title: "Foreign thread placement",
+        workspaceRoot: "/work/folders-foreign",
+      });
+      const error = yield* projects
+        .mutateThreadFolders({
+          type: "threadFolder.placeThread",
+          commandId: CommandId.make("runtime-folders-foreign-place"),
+          projectId,
+          threadId: ThreadId.make("runtime-folders-not-in-project"),
+          folderId,
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ThreadFolderCommandMissingThreadError");
+    }));
+
+  it("replays a reused command id's first receipt instead of re-planning", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const projectId = ProjectId.make("runtime-folders-replay");
+      const folderId = ThreadFolderId.make("runtime-folders-replay-folder");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-folders-replay-create"),
+        projectId,
+        title: "Folder receipt replay",
+        workspaceRoot: "/work/folders-replay",
+      });
+
+      // A rejected placement keeps its typed rejection even once a retry
+      // with the same command id would now succeed.
+      const missingThreadId = ThreadId.make("runtime-folders-replay-missing");
+      const rejectedCommandId = CommandId.make("runtime-folders-replay-rejected");
+      const firstError = yield* projects
+        .mutateThreadFolders({
+          type: "threadFolder.placeThread",
+          commandId: rejectedCommandId,
+          projectId,
+          threadId: missingThreadId,
+          folderId: null,
+        })
+        .pipe(Effect.flip);
+      assert.equal(firstError._tag, "ThreadFolderCommandMissingThreadError");
+
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-folders-replay-thread-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId: missingThreadId,
+        projectId,
+        title: "Replay thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const replayError = yield* projects
+        .mutateThreadFolders({
+          type: "threadFolder.placeThread",
+          commandId: rejectedCommandId,
+          projectId,
+          threadId: missingThreadId,
+          folderId: null,
+        })
+        .pipe(Effect.flip);
+      assert.equal(replayError._tag, "ThreadFolderCommandMissingThreadError");
+
+      // A command id already used by another folder command never re-plans.
+      const reused = yield* projects
+        .mutateThreadFolders({
+          type: "threadFolder.create",
+          commandId: CommandId.make("runtime-folders-replay-folder-create"),
+          projectId,
+          folderId,
+          title: "First",
+        })
+        .pipe(
+          Effect.andThen(
+            projects.mutateThreadFolders({
+              type: "threadFolder.rename",
+              commandId: CommandId.make("runtime-folders-replay-folder-create"),
+              projectId,
+              folderId,
+              title: "Second",
+            }),
+          ),
+        )
+        .pipe(Effect.flip);
+      assert.equal(reused._tag, "ProjectOperationError");
+      const shell = Option.getOrThrow(yield* projects.getShell(projectId));
+      assert.equal(shell.threadFolders?.[0]?.title, "First");
+    }));
+});

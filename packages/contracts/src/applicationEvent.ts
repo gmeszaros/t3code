@@ -15,6 +15,7 @@ import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import type { OrchestrationV2StoredEvent } from "./orchestrationV2.ts";
 import { ProjectScript, StoredProjectIcon } from "./project.ts";
+import { ThreadFolder } from "./threadFolder.ts";
 
 /**
  * Which client dispatched the command that produced this event (#7774).
@@ -80,6 +81,15 @@ export const ApplicationProjectDeletedPayload = Schema.Struct({
 });
 export type ApplicationProjectDeletedPayload = typeof ApplicationProjectDeletedPayload.Type;
 
+/** Carries the full folder list after any organizational folder command. */
+export const ApplicationProjectThreadFoldersUpdatedPayload = Schema.Struct({
+  projectId: ProjectId,
+  threadFolders: Schema.Array(ThreadFolder),
+  updatedAt: IsoDateTime,
+});
+export type ApplicationProjectThreadFoldersUpdatedPayload =
+  typeof ApplicationProjectThreadFoldersUpdatedPayload.Type;
+
 const ApplicationProjectEventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
@@ -113,10 +123,19 @@ export const ApplicationProjectDeletedEvent = Schema.Struct({
 });
 export type ApplicationProjectDeletedEvent = typeof ApplicationProjectDeletedEvent.Type;
 
+export const ApplicationProjectThreadFoldersUpdatedEvent = Schema.Struct({
+  ...ApplicationProjectEventBaseFields,
+  type: Schema.Literal("project.thread-folders-updated"),
+  payload: ApplicationProjectThreadFoldersUpdatedPayload,
+});
+export type ApplicationProjectThreadFoldersUpdatedEvent =
+  typeof ApplicationProjectThreadFoldersUpdatedEvent.Type;
+
 export const ApplicationProjectEvent = Schema.Union([
   ApplicationProjectCreatedEvent,
   ApplicationProjectMetaUpdatedEvent,
   ApplicationProjectDeletedEvent,
+  ApplicationProjectThreadFoldersUpdatedEvent,
 ]);
 export type ApplicationProjectEvent = typeof ApplicationProjectEvent.Type;
 

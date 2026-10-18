@@ -279,6 +279,16 @@ export function readEnvironmentSupportsActiveReorder(environmentId: EnvironmentI
   );
 }
 
+/** Whether the environment's server understands projects.mutateThreadFolders
+    and carries threadFolders on project shells. Same version-skew contract
+    as settlement. */
+export function readEnvironmentSupportsThreadFolders(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadFolders === true
+  );
+}
+
 /** Whether the environment's server understands thread.settle/unsettle.
     False for pre-settlement servers (capability defaults false on decode),
     so clients under version skew fall back instead of erroring. */

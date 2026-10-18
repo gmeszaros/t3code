@@ -368,6 +368,11 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  ThreadFolderMutation,
+  ThreadFolderMutationError,
+  ThreadFolderMutationResult,
+} from "./threadFolder.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -380,6 +385,7 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
+  projectsMutateThreadFolders: "projects.mutateThreadFolders",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
 
@@ -1245,6 +1251,12 @@ const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
   error: Schema.Union([ProjectMutationError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsMutateThreadFoldersRpc = Rpc.make(WS_METHODS.projectsMutateThreadFolders, {
+  payload: ThreadFolderMutation,
+  success: ThreadFolderMutationResult,
+  error: Schema.Union([ThreadFolderMutationError, EnvironmentAuthorizationError]),
+});
+
 // Finds or creates the Scratch project rooted at ServerConfig.scratchWorkspaceRoot.
 const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   payload: Schema.Struct({}),
@@ -1988,6 +2000,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
+  WsProjectsMutateThreadFoldersRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemGetMetadataRpc,

@@ -20,6 +20,8 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
+  | "move-to-folder"
+  | `folder:${string}`
   | "rename"
   | "regenerate-title"
   | "mark-unread"
@@ -90,6 +92,18 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /**
+   * The thread's project's folders in display order, with the folder that
+   * currently holds the thread marked. Null on servers without folder
+   * support, or surfaces where the folder list is unknown — the item hides.
+   */
+  readonly folderMenu: {
+    readonly folders: ReadonlyArray<{
+      readonly id: string;
+      readonly title: string;
+      readonly current: boolean;
+    }>;
+  } | null;
   readonly supports: {
     readonly settlement: boolean;
     /** Server understands thread.auto-settle.set. */
@@ -166,6 +180,31 @@ export function buildThreadActionMenuItems(
                   { id: "snooze:custom" as const, label: "Custom…", separatorBefore: true },
                 ],
               },
+        ]
+      : []),
+    // Folder placement is organization only: the move never interrupts a run
+    // or touches where the thread executes, so it sits with the sidebar
+    // settings rather than the destructive verbs below.
+    ...(state.folderMenu
+      ? [
+          {
+            id: "move-to-folder" as const,
+            label: "Move to folder",
+            icon: "folder",
+            children: [
+              {
+                id: "folder:none" as const,
+                label: "No folder",
+                checked: !state.folderMenu.folders.some((folder) => folder.current),
+              },
+              ...state.folderMenu.folders.map((folder) => ({
+                id: `folder:${folder.id}` as const,
+                label: folder.title,
+                checked: folder.current,
+              })),
+              { id: "folder:new" as const, label: "New folder…", separatorBefore: true },
+            ],
+          },
         ]
       : []),
     { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },

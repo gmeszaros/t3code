@@ -1,3 +1,4 @@
+import { threadFolderMoveTargets } from "@t3tools/client-runtime/state/thread-folders";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -8,7 +9,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  EnvironmentId,
+  ThreadId,
+  ThreadFolder,
+  ThreadFolderId,
+} from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
@@ -168,10 +175,43 @@ export function sidebarMarkerId(marker: SidebarListMarker): string {
 
 export type SidebarListItem =
   | { readonly kind: "thread"; readonly key: string; readonly section: SidebarSection }
+  /** An organizational folder header inside the active shelf. Not a section
+      boundary: the rows it groups stay active threads for every lifecycle
+      rule, and section inference deliberately skips it. */
+  | { readonly kind: "folder"; readonly key: string; readonly folderKey: string }
   | { readonly kind: "marker"; readonly marker: SidebarListMarker };
 
+/** Folder headers share the marker prefix so their sortable ids stay
+    colon-free and can never collide with a scoped thread key. */
+export function sidebarFolderItemId(folderKey: string): string {
+  return `${SIDEBAR_MARKER_PREFIX}folder-${encodeURIComponent(folderKey)}`;
+}
+
+export function buildThreadFolderMoveMenu(input: {
+  readonly folders: readonly ThreadFolder[];
+  readonly movedId: ThreadFolderId;
+  readonly canOperate: boolean;
+}) {
+  const targets = threadFolderMoveTargets(input.folders, input.movedId);
+  const item: ContextMenuItem<"move-to" | `move-to:${number}`> = {
+    id: "move-to",
+    label: "Move to",
+    disabled: !input.canOperate || targets.length === 0,
+    children: targets.map((target, index) => ({
+      id: `move-to:${index}`,
+      label: `${"  ".repeat(target.depth)}${target.title}`,
+      disabled: !input.canOperate,
+    })),
+  };
+  return { targets, item };
+}
+
 export function sidebarListItemId(item: SidebarListItem): string {
-  return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
+  return item.kind === "thread"
+    ? item.key
+    : item.kind === "folder"
+      ? item.key
+      : sidebarMarkerId(item.marker);
 }
 
 /** The section a slot belongs to, read off the markers around it: from
@@ -223,6 +263,9 @@ export function resolveSidebarDropTarget(
         item.marker === "settled-header"
       )
         break;
+    } else if (item.kind === "folder") {
+      // Folder headers group rows but own no slot in a thread order.
+      continue;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
   }

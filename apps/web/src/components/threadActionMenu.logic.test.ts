@@ -17,6 +17,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  folderMenu: null,
   supports: {
     settlement: true,
     autoSettleOptOut: true,

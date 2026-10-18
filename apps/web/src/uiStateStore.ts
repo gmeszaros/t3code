@@ -31,6 +31,7 @@ export interface PersistedUiState {
   threadChangedFilesExpansionVersion?: number;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   pullRequestMergeMethod?: string;
+  sidebarFolderCollapsedById?: Record<string, boolean>;
 }
 
 export interface UiProjectState {
@@ -40,6 +41,8 @@ export interface UiProjectState {
   // projects". Lives here so routes that unmount the sidebar (Settings)
   // cannot reset the filter.
   sidebarProjectScopeKey: string | null;
+  // Organizational thread folders the sidebar renders collapsed, by folder id.
+  sidebarFolderCollapsedById: Record<string, boolean>;
 }
 
 export interface UiThreadState {
@@ -62,6 +65,7 @@ const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
   sidebarProjectScopeKey: null,
+  sidebarFolderCollapsedById: {},
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
@@ -155,6 +159,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
         : {},
     defaultAdvertisedEndpointKey: sanitizeOptionalKey(parsed.defaultAdvertisedEndpointKey),
     sidebarProjectScopeKey: sanitizeOptionalKey(parsed.sidebarProjectScopeKey),
+    sidebarFolderCollapsedById: sanitizeBooleanRecord(parsed.sidebarFolderCollapsedById),
     pullRequestMergeMethod: isPullRequestMergeMethod(parsed.pullRequestMergeMethod)
       ? parsed.pullRequestMergeMethod
       : initialState.pullRequestMergeMethod,
@@ -229,6 +234,7 @@ export function persistState(state: UiState): void {
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         sidebarProjectScopeKey: state.sidebarProjectScopeKey,
+        sidebarFolderCollapsedById: state.sidebarFolderCollapsedById,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
         pullRequestMergeMethod: state.pullRequestMergeMethod,
@@ -340,6 +346,29 @@ export function setSidebarProjectScopeKey(state: UiState, projectKey: string | n
   };
 }
 
+export function setSidebarFolderCollapsed(
+  state: UiState,
+  folderId: string,
+  collapsed: boolean,
+): UiState {
+  // Absent means expanded, so expanding deletes the flag instead of keeping
+  // an explicit false entry that would persist for the folder's lifetime.
+  if (collapsed) {
+    if (state.sidebarFolderCollapsedById[folderId] === true) return state;
+    return {
+      ...state,
+      sidebarFolderCollapsedById: {
+        ...state.sidebarFolderCollapsedById,
+        [folderId]: true,
+      },
+    };
+  }
+  if (state.sidebarFolderCollapsedById[folderId] !== true) return state;
+  const expanded = { ...state.sidebarFolderCollapsedById };
+  delete expanded[folderId];
+  return { ...state, sidebarFolderCollapsedById: expanded };
+}
+
 function setPullRequestMergeMethod(state: UiState, method: PullRequestMergeMethod): UiState {
   return state.pullRequestMergeMethod === method
     ? state
@@ -429,6 +458,7 @@ interface UiStateStore extends UiState {
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setSidebarProjectScopeKey: (projectKey: string | null) => void;
+  setSidebarFolderCollapsed: (folderId: string, collapsed: boolean) => void;
   setPullRequestMergeMethod: (method: PullRequestMergeMethod) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
@@ -450,6 +480,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setSidebarProjectScopeKey: (projectKey) =>
     set((state) => setSidebarProjectScopeKey(state, projectKey)),
+  setSidebarFolderCollapsed: (folderId, collapsed) =>
+    set((state) => setSidebarFolderCollapsed(state, folderId, collapsed)),
   setPullRequestMergeMethod: (method) => set((state) => setPullRequestMergeMethod(state, method)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),

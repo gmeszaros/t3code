@@ -1,3 +1,7 @@
+import {
+  threadFolderProjectKey,
+  threadFolderViewKey,
+} from "@t3tools/client-runtime/state/thread-folders";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -13,6 +17,7 @@ import {
   resolveProjectExpanded,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
+  setSidebarFolderCollapsed,
   setSidebarProjectScopeKey,
   setThreadChangedFilesExpanded,
   type UiState,
@@ -23,6 +28,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectExpandedById: {},
     projectOrder: [],
     sidebarProjectScopeKey: null,
+    sidebarFolderCollapsedById: {},
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
@@ -190,6 +196,10 @@ describe("parsePersistedState", () => {
           "turn-2": true,
         },
       },
+      sidebarFolderCollapsedById: {
+        "folder-1": true,
+        invalid: "no" as unknown as boolean,
+      },
     });
 
     expect(parsed).toEqual({
@@ -202,6 +212,9 @@ describe("parsePersistedState", () => {
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       sidebarProjectScopeKey: null,
+      sidebarFolderCollapsedById: {
+        "folder-1": true,
+      },
       pullRequestMergeMethod: "merge",
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -307,6 +320,9 @@ describe("uiStateStore persistence", () => {
         },
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      sidebarFolderCollapsedById: {
+        "folder-1": true,
+      },
     });
 
     persistState(state);
@@ -324,6 +340,9 @@ describe("uiStateStore persistence", () => {
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       sidebarProjectScopeKey: null,
+      sidebarFolderCollapsedById: {
+        "folder-1": true,
+      },
       threadChangedFilesExpansionVersion: 2,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -335,6 +354,39 @@ describe("uiStateStore persistence", () => {
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
+    });
+  });
+
+  it("persists independent collapse state for the same native folder ID in different environments", () => {
+    const first = threadFolderViewKey(threadFolderProjectKey("e1", "p"), "same");
+    const second = threadFolderViewKey(threadFolderProjectKey("e2", "p"), "same");
+    const state = setSidebarFolderCollapsed(
+      setSidebarFolderCollapsed(makeUiState(), first, true),
+      second,
+      true,
+    );
+    persistState(setSidebarFolderCollapsed(state, first, false));
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(parsePersistedState(persisted).sidebarFolderCollapsedById).toEqual({ [second]: true });
+  });
+
+  it("persists collapsed sidebar folders across reloads", () => {
+    const collapsed = setSidebarFolderCollapsed(makeUiState(), "folder-1", true);
+    expect(setSidebarFolderCollapsed(collapsed, "folder-1", true)).toBe(collapsed);
+    expect(
+      setSidebarFolderCollapsed(collapsed, "folder-1", false).sidebarFolderCollapsedById,
+    ).toEqual({});
+
+    persistState(setSidebarFolderCollapsed(collapsed, "folder-2", true));
+
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(parsePersistedState(persisted).sidebarFolderCollapsedById).toEqual({
+      "folder-1": true,
+      "folder-2": true,
     });
   });
 

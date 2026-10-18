@@ -36,6 +36,17 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  applyFolderCollapse,
+  buildThreadFolderTree,
+  groupThreadsByProjectFolders,
+  planThreadFolderReorder,
+  threadFolderDepth,
+  threadFolderProjectKey,
+  threadFolderViewKey,
+  threadFolderThreadKey,
+  type ThreadFolderView,
+} from "@t3tools/client-runtime/state/thread-folders";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import {
   resolveSettledThreadTimestamp,
@@ -58,8 +69,14 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
+  CommandId,
+  MAX_THREAD_FOLDER_DEPTH,
+  ThreadFolderId,
   type EnvironmentMachineKind,
+  type ProjectId,
   type ScopedThreadRef,
+  type ThreadFolder,
+  type ThreadFolderMutation,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -69,6 +86,8 @@ import {
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
   CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -124,7 +143,7 @@ import { useShortcutModifierState } from "../shortcutModifierState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { isMacPlatform } from "~/lib/utils";
+import { isMacPlatform, randomUUID } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
@@ -159,12 +178,13 @@ import {
 } from "../state/environments";
 import {
   readThreadShell,
+  readEnvironmentSupportsThreadFolders,
   useAllEnvironmentProjectSnapshotsReady,
   useProjects,
   useThreadShells,
 } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
-import { environmentProjects } from "../state/projects";
+import { environmentProjects, projectEnvironment } from "../state/projects";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
@@ -219,6 +239,8 @@ import {
   shouldNavigateAfterThreadPark,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
+  sidebarFolderItemId,
+  buildThreadFolderMoveMenu,
   sidebarListItemId,
   sidebarMarkerId,
   sidebarThreadKeyAtY,
@@ -651,6 +673,24 @@ type SortableThreadRowBag = Pick<
   "listeners" | "setNodeRef" | "transform" | "transition" | "isDragging"
 >;
 
+/** A folder command minus the ids every command carries; the dispatch site
+    fills in the owning project and a fresh command id. */
+type ThreadFolderMutationInput = ThreadFolderMutation extends infer Mutation
+  ? Mutation extends { readonly type: string }
+    ? Omit<Mutation, "commandId" | "projectId">
+    : never
+  : never;
+
+/** Context-menu actions on one folder header row. */
+type FolderMenuAction =
+  | "new-subfolder"
+  | "rename"
+  | "move-up"
+  | "move-down"
+  | "remove"
+  | "move-to"
+  | `move-to:${number}`;
+
 function SortableThreadRow(props: {
   id: string;
   disabled: boolean;
@@ -830,6 +870,117 @@ function SidebarSectionHeader(props: {
     </SortableSidebarMarker>
   );
 }
+
+// An organizational folder header rides the same sortable list as the rows
+// it groups (it shifts during drags but is never picked up), and acts only
+// on the project's folder list — toggling, renaming, and menu actions here
+// can never touch a thread's run or lifecycle.
+function SortableSidebarFolder(props: { id: string; children: ReactNode }) {
+  const { setNodeRef, transform, transition } = useSortable({
+    id: props.id,
+    disabled: { draggable: true },
+    animateLayoutChanges: animateSidebarLayoutChanges,
+  });
+  return (
+    <li
+      ref={setNodeRef}
+      data-thread-selection-safe
+      className="list-none"
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+    >
+      {props.children}
+    </li>
+  );
+}
+
+const SidebarFolderRow = memo(function SidebarFolderRow(props: {
+  folderKey: string;
+  title: string;
+  /** 1-based nesting depth; roots are 0px indented, each level +12px. */
+  depth: number;
+  collapsed: boolean;
+  /** Members whose work is running — the collapsed folder's activity cue. */
+  workingCount: number;
+  isRenaming: boolean;
+  renamingTitle: string;
+  onToggle: (folderId: string) => void;
+  onContextMenu: (folderId: string, position: { x: number; y: number }) => void;
+  onRenamingTitleChange: (title: string) => void;
+  onCommitRename: () => void;
+  onCancelRename: () => void;
+}) {
+  const handleContextMenu = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      props.onContextMenu(props.folderKey, { x: event.clientX, y: event.clientY });
+    },
+    [props],
+  );
+  const handleKeyDown = useCallback(
+    (event: ReactKeyboardEvent) => {
+      if ((event.target as HTMLElement).tagName === "INPUT") return;
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        props.onContextMenu(props.folderKey, { x: rect.left, y: rect.bottom });
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        props.onToggle(props.folderKey);
+      }
+    },
+    [props],
+  );
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={!props.collapsed}
+      data-testid={`sidebar-folder-row-${props.folderKey}`}
+      className="group/sidebar-folder flex h-7 w-full cursor-pointer select-none items-center gap-1.5 rounded-md pr-2 text-left text-xs text-sidebar-foreground/90 outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      style={{ paddingInlineStart: 10 + (props.depth - 1) * 12 }}
+      onClick={() => {
+        if (!props.isRenaming) props.onToggle(props.folderKey);
+      }}
+      onKeyDown={handleKeyDown}
+      onContextMenu={handleContextMenu}
+    >
+      {props.collapsed ? (
+        <ChevronRightIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground" />
+      ) : (
+        <ChevronDownIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground" />
+      )}
+      <FolderIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground" />
+      {props.isRenaming ? (
+        <input
+          autoFocus
+          value={props.renamingTitle}
+          aria-label="Folder name"
+          onChange={(event) => props.onRenamingTitleChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              props.onCommitRename();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancelRename();
+            }
+          }}
+          onBlur={props.onCommitRename}
+          onClick={(event) => event.stopPropagation()}
+          className="h-5 min-w-0 flex-1 rounded-sm bg-transparent text-xs text-sidebar-foreground outline-none ring-1 ring-ring"
+        />
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{props.title}</span>
+      )}
+      {props.collapsed && props.workingCount > 0 ? (
+        <span className="shrink-0 text-2xs tabular-nums text-sidebar-muted-foreground">
+          {props.workingCount}
+        </span>
+      ) : null}
+    </div>
+  );
+});
 
 // One unsent draft session the user has invested content in. Two lines,
 // nothing else: project name, then the typed prompt. All the draft's
@@ -1128,6 +1279,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // the descriptor is not loaded. Pinning itself lives in the context menu.
   pinningSupported: boolean;
   isPinned: boolean;
+  // Organizational nesting: set on rows grouped under a sidebar folder
+  // header, indented one step per level. Placement is display-only.
+  depth?: number | undefined;
   // Present on rows whose server supports every drop outcome: dnd-kit
   // sortable bag applied to the row root so the whole row drags (the
   // pointer sensor's distance constraint keeps plain clicks working).
@@ -1796,6 +1950,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         data-thread-item={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
+        style={props.depth === undefined ? undefined : { marginInlineStart: props.depth * 12 }}
         className={cn(
           // Matches the h-9 row so unrendered rows never shift the list when they paint.
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
@@ -1961,6 +2116,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       data-thread-item={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
+      style={props.depth === undefined ? undefined : { marginInlineStart: props.depth * 12 }}
       className={cn(
         // Matches the h-[4.875rem] content box; the py-0.5 padding is added on top.
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
@@ -3084,17 +3240,145 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeThreadKey, workingShelfExpanded, workingThreads]);
 
+  // ── Organizational thread folders ──
+  // Folders re-bucket the active shelf only: pinned, snoozed, settled, and
+  // the Working beta classify exactly as before, so a folder move can never
+  // change a thread's lifecycle or interrupt its run. Working members stay in
+  // the Working section; folders only count them for collapsed headers.
+  const sidebarFolderCollapsedById = useUiStateStore((s) => s.sidebarFolderCollapsedById);
+  const activeFolderGrouping = useMemo(() => {
+    const foldersByProjectKey = new Map<string, readonly ThreadFolder[]>();
+    for (const project of projects) {
+      if (
+        scopedProjectKeys !== null &&
+        !scopedProjectKeys.has(`${project.environmentId}:${project.id}`)
+      )
+        continue;
+      const folders = project.threadFolders ?? [];
+      if (folders.length === 0) continue;
+      foldersByProjectKey.set(threadFolderProjectKey(project.environmentId, project.id), folders);
+    }
+    if (foldersByProjectKey.size === 0) return null;
+    return groupThreadsByProjectFolders({
+      foldersByProjectKey,
+      threads: activeThreads,
+      workingThreadIds: new Set(
+        [...activeThreads, ...workingThreads]
+          .filter(isSidebarThreadWorking)
+          .map(threadFolderThreadKey),
+      ),
+    });
+  }, [activeThreads, projects, scopedProjectKeys, workingThreads]);
+  // A collapsed folder hides its rows like a collapsed shelf, with the same
+  // exception: the route-open thread never vanishes behind the fold.
+  const folderCollapse = useMemo(
+    () =>
+      activeFolderGrouping === null
+        ? null
+        : applyFolderCollapse({
+            grouping: activeFolderGrouping,
+            collapsedById: sidebarFolderCollapsedById,
+            ...(routeThreadKey === null
+              ? {}
+              : {
+                  keepVisible: (thread: EnvironmentThreadShell) =>
+                    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
+                    routeThreadKey,
+                }),
+          }),
+    [activeFolderGrouping, routeThreadKey, sidebarFolderCollapsedById],
+  );
+  const visibleActiveThreads =
+    folderCollapse === null ? activeThreads : folderCollapse.visibleThreads;
+  const folderOwnerByKey = useMemo(() => {
+    const owners = new Map<
+      string,
+      { environmentId: EnvironmentId; projectId: ProjectId; folderId: ThreadFolderId }
+    >();
+    for (const project of projects) {
+      for (const folder of project.threadFolders ?? []) {
+        owners.set(
+          threadFolderViewKey(threadFolderProjectKey(project.environmentId, project.id), folder.id),
+          { environmentId: project.environmentId, projectId: project.id, folderId: folder.id },
+        );
+      }
+    }
+    return owners;
+  }, [projects]);
+  // Render-side lookups for the flat list: which folder a visible row nests
+  // under, and each rendered folder header's view model.
+  const folderDepthByKey = useMemo(() => {
+    const depths = new Map<string, number>();
+    if (folderCollapse !== null) {
+      for (const { view, visibleThreads } of folderCollapse.views) {
+        for (const thread of visibleThreads) {
+          depths.set(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), view.depth);
+        }
+      }
+    }
+    return depths;
+  }, [folderCollapse]);
+  const folderViewByKey = useMemo(
+    () =>
+      new Map<string, ThreadFolderView<EnvironmentThreadShell>>(
+        folderCollapse === null ? [] : folderCollapse.views.map(({ view }) => [view.key, view]),
+      ),
+    [folderCollapse],
+  );
+  const foldersByProjectKey = useMemo(() => {
+    const map = new Map<string, readonly ThreadFolder[]>();
+    for (const project of projects) {
+      map.set(
+        threadFolderProjectKey(project.environmentId, project.id),
+        project.threadFolders ?? [],
+      );
+    }
+    return map;
+  }, [projects]);
+  const folderPathByThreadKey = useMemo(() => {
+    const paths = new Map<string, string>();
+    for (const project of projects) {
+      const visit = (
+        nodes: ReturnType<typeof buildThreadFolderTree<ThreadFolder>>,
+        parents: readonly string[],
+      ) => {
+        for (const node of nodes) {
+          const path = [...parents, node.folder.title];
+          for (const id of node.folder.threadIds) {
+            paths.set(
+              threadFolderThreadKey({
+                environmentId: project.environmentId,
+                projectId: project.id,
+                id,
+              }),
+              path.join(" / "),
+            );
+          }
+          visit(node.children, path);
+        }
+      };
+      visit(buildThreadFolderTree(project.threadFolders ?? []), []);
+    }
+    return paths;
+  }, [projects]);
+  // Context-menu handlers read this through a ref: a fresh Map identity per
+  // shell update would otherwise defeat every row's memoization.
+  const foldersByProjectKeyRef = useRef(foldersByProjectKey);
+  foldersByProjectKeyRef.current = foldersByProjectKey;
+
   const orderedThreads = useMemo(
     () => [
       ...pinnedThreads,
-      ...activeThreads,
+      // Collapsed folders hide their rows from traversal and jump shortcuts,
+      // exactly like the collapsed shelves below.
+      ...visibleActiveThreads,
       ...visibleWorkingThreads,
       ...visibleSnoozedThreads,
       ...renderedSettledThreads,
     ],
     [
       pinnedThreads,
-      activeThreads,
+      visibleActiveThreads,
       visibleWorkingThreads,
       visibleSnoozedThreads,
       renderedSettledThreads,
@@ -3778,6 +4062,255 @@ export default function Sidebar() {
     [confirmAndUnpinThread],
   );
 
+  // ── Organizational thread folders: actions ──
+  // Folder commands re-bucket the sidebar only; the server plans them against
+  // the project's folder list and never dispatches a turn or touches a
+  // thread's run, checkout, or delegation lineage.
+  const [renamingFolderKey, setRenamingFolderKey] = useState<string | null>(null);
+  const [renamingFolderTitle, setRenamingFolderTitle] = useState("");
+  const setSidebarFolderCollapsed = useUiStateStore((s) => s.setSidebarFolderCollapsed);
+  const mutateThreadFoldersCommand = useOrchestrationCommand(
+    projectEnvironment.mutateThreadFolders,
+    { reportFailure: false },
+  );
+  const runThreadFolderMutation = useCallback(
+    async (
+      owner: { readonly environmentId: EnvironmentId; readonly projectId: ProjectId },
+      mutation: ThreadFolderMutationInput,
+    ) => {
+      const result = await mutateThreadFoldersCommand({
+        environmentId: owner.environmentId,
+        input: {
+          ...mutation,
+          projectId: owner.projectId,
+          commandId: CommandId.make(randomUUID()),
+        } as ThreadFolderMutation,
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to update folders",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [mutateThreadFoldersCommand],
+  );
+
+  const toggleSidebarFolder = useCallback(
+    (folderId: string) => {
+      const collapsedById = useUiStateStore.getState().sidebarFolderCollapsedById;
+      setSidebarFolderCollapsed(folderId, collapsedById[folderId] !== true);
+    },
+    [setSidebarFolderCollapsed],
+  );
+
+  // A new folder starts life selected in its row's rename input, so naming
+  // it is the same gesture as renaming it later.
+  const startFolderRename = useCallback((folderId: string, title: string) => {
+    setRenamingFolderKey(folderId);
+    setRenamingFolderTitle(title);
+  }, []);
+  const commitFolderRename = useCallback(() => {
+    if (renamingFolderKey === null) return;
+    const owner = folderOwnerByKey.get(renamingFolderKey);
+    const title = renamingFolderTitle.trim();
+    setRenamingFolderKey(null);
+    if (owner === undefined || title.length === 0) return;
+    void runThreadFolderMutation(owner, {
+      type: "threadFolder.rename",
+      folderId: owner.folderId,
+      title,
+    });
+  }, [folderOwnerByKey, renamingFolderKey, renamingFolderTitle, runThreadFolderMutation]);
+  const cancelFolderRename = useCallback(() => setRenamingFolderKey(null), []);
+
+  const createThreadFolder = useCallback(
+    (
+      owner: { readonly environmentId: EnvironmentId; readonly projectId: ProjectId },
+      parentId: ThreadFolderId | null,
+    ) => {
+      const folderId = ThreadFolderId.make(randomUUID());
+      void runThreadFolderMutation(owner, {
+        type: "threadFolder.create",
+        folderId,
+        title: "New folder",
+        ...(parentId === null ? {} : { parentId }),
+      });
+      startFolderRename(
+        threadFolderViewKey(threadFolderProjectKey(owner.environmentId, owner.projectId), folderId),
+        "New folder",
+      );
+    },
+    [runThreadFolderMutation, startFolderRename],
+  );
+
+  const handleFolderContextMenu = useCallback(
+    (folderKey: string, position: { x: number; y: number }) => {
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+        const owner = folderOwnerByKey.get(folderKey);
+        if (owner === undefined) return;
+        const folderId = owner.folderId;
+        const folders = foldersByProjectKeyRef.current.get(
+          threadFolderProjectKey(owner.environmentId, owner.projectId),
+        );
+        if (folders === undefined) return;
+        const folder = folders.find((candidate) => candidate.id === folderId);
+        if (folder === undefined) return;
+        const depth = threadFolderDepth(folders, folderId);
+        const assignments = planThreadFolderReorder({
+          folders: [...folders],
+          movedId: folderId as ThreadFolderId,
+          direction: "up",
+        });
+        const downAssignments = planThreadFolderReorder({
+          folders: [...folders],
+          movedId: folderId as ThreadFolderId,
+          direction: "down",
+        });
+        const canOperate = readEnvironmentScope(owner.environmentId, AuthOrchestrationOperateScope);
+        const { targets: moveTargets, item: moveMenuItem } = buildThreadFolderMoveMenu({
+          folders,
+          movedId: folderId,
+          canOperate,
+        });
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show<FolderMenuAction>(
+            [
+              {
+                id: "new-subfolder",
+                label: "New subfolder",
+                icon: "folder-plus",
+                disabled: !canOperate || depth >= MAX_THREAD_FOLDER_DEPTH,
+              },
+              { id: "rename", label: "Rename folder", icon: "pencil", disabled: !canOperate },
+              moveMenuItem,
+              {
+                id: "move-up",
+                label: "Move up",
+                disabled: !canOperate || assignments === null,
+              },
+              {
+                id: "move-down",
+                label: "Move down",
+                disabled: !canOperate || downAssignments === null,
+              },
+              {
+                id: "remove",
+                label: "Remove folder",
+                icon: "trash",
+                destructive: true,
+                disabled: !canOperate,
+                // Removal never deletes anything: subfolders and member
+                // threads lift to the removed folder's parent.
+                separatorBefore: true,
+              },
+            ],
+            position,
+          ),
+        );
+        if (clicked._tag === "Failure" || clicked.value === null || !canOperate) return;
+        if (clicked.value.startsWith("move-to:")) {
+          const target = moveTargets[Number(clicked.value.slice("move-to:".length))];
+          if (target === undefined) return;
+          void runThreadFolderMutation(owner, {
+            type: "threadFolder.move",
+            folderId,
+            parentId: target.parentId,
+          });
+          return;
+        }
+        switch (clicked.value) {
+          case "new-subfolder":
+            createThreadFolder(owner, folderId as ThreadFolderId);
+            return;
+          case "rename":
+            startFolderRename(folderKey, folder.title);
+            return;
+          case "move-up":
+            for (const assignment of assignments ?? []) {
+              void runThreadFolderMutation(owner, {
+                type: "threadFolder.reorder",
+                folderId: assignment.folderId,
+                orderKey: assignment.orderKey,
+              });
+            }
+            return;
+          case "move-down":
+            for (const assignment of downAssignments ?? []) {
+              void runThreadFolderMutation(owner, {
+                type: "threadFolder.reorder",
+                folderId: assignment.folderId,
+                orderKey: assignment.orderKey,
+              });
+            }
+            return;
+          case "remove":
+            void runThreadFolderMutation(owner, {
+              type: "threadFolder.remove",
+              folderId: folderId as ThreadFolderId,
+            });
+            return;
+        }
+      })();
+    },
+    [createThreadFolder, folderOwnerByKey, runThreadFolderMutation, startFolderRename],
+  );
+
+  // "Move to folder" dispatch from a thread's context menu.
+  const handleThreadFolderMenuAction = useCallback(
+    (action: `folder:${string}`, thread: SidebarThreadSummary, threadRef: ScopedThreadRef) => {
+      const owner = {
+        environmentId: threadRef.environmentId,
+        projectId: thread.projectId as ProjectId,
+      };
+      if (action === "folder:none") {
+        void runThreadFolderMutation(owner, {
+          type: "threadFolder.placeThread",
+          threadId: threadRef.threadId,
+          folderId: null,
+        });
+        return;
+      }
+      if (action === "folder:new") {
+        const folderId = ThreadFolderId.make(randomUUID());
+        // The project's command lane is serial, so placement lands right
+        // after the create; awaiting keeps that ordering explicit.
+        void (async () => {
+          await runThreadFolderMutation(owner, {
+            type: "threadFolder.create",
+            folderId,
+            title: "New folder",
+          });
+          await runThreadFolderMutation(owner, {
+            type: "threadFolder.placeThread",
+            threadId: threadRef.threadId,
+            folderId,
+          });
+        })();
+        startFolderRename(
+          threadFolderViewKey(
+            threadFolderProjectKey(owner.environmentId, owner.projectId),
+            folderId,
+          ),
+          "New folder",
+        );
+        return;
+      }
+      void runThreadFolderMutation(owner, {
+        type: "threadFolder.placeThread",
+        threadId: threadRef.threadId,
+        folderId: action.slice("folder:".length) as ThreadFolderId,
+      });
+    },
+    [runThreadFolderMutation, startFolderRename],
+  );
+
   const handleThreadDragStart = useCallback(
     (event: DragStartEvent) => {
       const activeKey = String(event.active.id);
@@ -3825,7 +4358,8 @@ export default function Sidebar() {
         workingThreads.length +
         snoozedThreads.length +
         settledThreads.length ===
-      0
+        0 &&
+      (folderCollapse?.views.length ?? 0) === 0
     ) {
       return [];
     }
@@ -3833,9 +4367,22 @@ export default function Sidebar() {
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
+    // Folder headers sit between active rows; they carry no lifecycle of
+    // their own and every section rule reads straight past them.
     items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
+    items.push(
+      ...rowsOf(folderCollapse === null ? activeThreads : folderCollapse.ungrouped, "active"),
+    );
+    if (folderCollapse !== null) {
+      for (const { view, visibleThreads } of folderCollapse.views) {
+        items.push({
+          kind: "folder",
+          key: sidebarFolderItemId(view.key),
+          folderKey: view.key,
+        });
+        items.push(...rowsOf(visibleThreads, "active"));
+      }
+    }
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
@@ -3850,7 +4397,9 @@ export default function Sidebar() {
     items.push(...settledRows);
     return items;
   }, [
+    activeFolderGrouping,
     activeThreads,
+    folderCollapse,
     pinnedThreads,
     renderedSettledThreads,
     settledThreads.length,
@@ -3875,7 +4424,13 @@ export default function Sidebar() {
   const sidebarListOrderKey = useMemo(
     () =>
       sidebarListItems
-        .map((item) => (item.kind === "thread" ? `${item.key}:${item.section}` : item.marker))
+        .map((item) =>
+          item.kind === "thread"
+            ? `${item.key}:${item.section}`
+            : item.kind === "folder"
+              ? item.key
+              : item.marker,
+        )
         .join("\0"),
     [sidebarListItems],
   );
@@ -4646,6 +5201,33 @@ export default function Sidebar() {
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        // Folder submenu in display order, from the thread's own project's
+        // authoritative list; hidden entirely against servers without the
+        // capability.
+        const threadFolders = readEnvironmentSupportsThreadFolders(threadRef.environmentId)
+          ? foldersByProjectKeyRef.current.get(
+              threadFolderProjectKey(threadRef.environmentId, thread.projectId),
+            )
+          : undefined;
+        const folderMenu =
+          threadFolders === undefined
+            ? null
+            : {
+                folders: [...buildThreadFolderTree(threadFolders)].flatMap(function walk(node): {
+                  id: string;
+                  title: string;
+                  current: boolean;
+                }[] {
+                  return [
+                    {
+                      id: node.folder.id,
+                      title: node.folder.title,
+                      current: node.folder.threadIds.includes(thread.id),
+                    },
+                    ...node.children.flatMap(walk),
+                  ];
+                }),
+              };
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
@@ -4667,6 +5249,7 @@ export default function Sidebar() {
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
+              folderMenu,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4687,6 +5270,10 @@ export default function Sidebar() {
               ? await requestCustomSnooze()
               : snoozePresets.find((candidate) => `snooze:${candidate.id}` === clicked.value);
           if (preset) attemptSnooze(threadRef, preset);
+          return;
+        }
+        if (clicked.value?.startsWith("folder:")) {
+          handleThreadFolderMenuAction(clicked.value as `folder:${string}`, thread, threadRef);
           return;
         }
         switch (clicked.value) {
@@ -4884,6 +5471,7 @@ export default function Sidebar() {
       copyThreadIdToClipboard,
       deleteThread,
       handleMultiSelectContextMenu,
+      handleThreadFolderMenuAction,
       markThreadUnread,
       openProjectSettings,
       projectScopeKey,
@@ -5292,6 +5880,7 @@ export default function Sidebar() {
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
                         sortable?: SortableThreadRowBag,
+                        depth?: number,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -5311,6 +5900,7 @@ export default function Sidebar() {
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
                             variant={rowVariant}
+                            depth={depth}
                             // Snoozed rows wake, settled rows un-settle, and cards settle.
                             variantAction={
                               section === "snoozed"
@@ -5374,9 +5964,16 @@ export default function Sidebar() {
                               null
                             }
                             projectDisplayName={
-                              projectDisplayNameByKey.get(
-                                `${thread.environmentId}:${thread.projectId}`,
-                              ) ?? null
+                              [
+                                projectDisplayNameByKey.get(
+                                  `${thread.environmentId}:${thread.projectId}`,
+                                ),
+                                section === "working"
+                                  ? folderPathByThreadKey.get(threadFolderThreadKey(thread))
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" / ") || null
                             }
                             providerEntryByInstanceId={
                               providerEntriesByEnvironment.get(thread.environmentId) ??
@@ -5410,6 +6007,7 @@ export default function Sidebar() {
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
+                        depth?: number,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -5427,7 +6025,7 @@ export default function Sidebar() {
                               optimisticDrop !== null
                             }
                           >
-                            {(bag) => renderThreadRowInner(thread, section, bag)}
+                            {(bag) => renderThreadRowInner(thread, section, bag, depth)}
                           </SortableThreadRow>
                         );
                       };
@@ -5445,7 +6043,35 @@ export default function Sidebar() {
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          const depth = folderDepthByKey.get(item.key);
+                          items.push(
+                            renderThreadRow(threadByKey.get(item.key)!, item.section, depth),
+                          );
+                          continue;
+                        }
+                        if (item.kind === "folder") {
+                          const view = folderViewByKey.get(item.folderKey);
+                          if (view === undefined) continue;
+                          items.push(
+                            <SortableSidebarFolder key={item.key} id={item.key}>
+                              <SidebarFolderRow
+                                folderKey={view.key}
+                                title={view.folder.title}
+                                depth={view.depth}
+                                collapsed={sidebarFolderCollapsedById[view.key] === true}
+                                workingCount={view.workingCount}
+                                isRenaming={renamingFolderKey === view.key}
+                                renamingTitle={
+                                  renamingFolderKey === view.key ? renamingFolderTitle : ""
+                                }
+                                onToggle={toggleSidebarFolder}
+                                onContextMenu={handleFolderContextMenu}
+                                onRenamingTitleChange={setRenamingFolderTitle}
+                                onCommitRename={commitFolderRename}
+                                onCancelRename={cancelFolderRename}
+                              />
+                            </SortableSidebarFolder>,
+                          );
                           continue;
                         }
                         switch (item.marker) {
