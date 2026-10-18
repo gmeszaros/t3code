@@ -158,6 +158,9 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: !threadRuntimeCanArchive(thread.runtime),
+          // Folder organization is managed from the sidebar, which owns the
+          // folder tree; the chat header menu stays lifecycle-only.
+          folderMenu: null,
           supports,
           snoozePresets,
         });

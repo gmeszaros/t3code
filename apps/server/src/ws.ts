@@ -73,6 +73,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProjectMutationError,
+  ThreadFolderMutationError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -506,6 +507,21 @@ function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntries
       return { failure: "read_directory_failed", parentPath: error.parentPath };
     default:
       return unexpectedCompatibilityError(error);
+  }
+}
+
+/** Typed folder rejections explain themselves; infrastructure failures stay generic. */
+function threadFolderMutationMessage(
+  error: ProjectService.ThreadFolderServiceError | ServerRuntimeStartup.ServerRuntimeStartupError,
+): string {
+  switch (error._tag) {
+    case "ThreadFolderCommandInvariantError":
+    case "ThreadFolderCommandMissingFolderError":
+    case "ThreadFolderCommandMissingProjectError":
+    case "ThreadFolderCommandMissingThreadError":
+      return error.message;
+    default:
+      return "Failed to update thread folders.";
   }
 }
 
@@ -2716,6 +2732,17 @@ const layerWsRpc = (
                     cause._tag === "ProjectNotEmptyError"
                       ? cause.message
                       : "Failed to mutate project.",
+                  cause,
+                }),
+            ),
+          ),
+        [WS_METHODS.projectsMutateThreadFolders]: (mutation) =>
+          startup.enqueueCommand(projectService.mutateThreadFolders(mutation)).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ThreadFolderMutationError({
+                  commandId: mutation.commandId,
+                  message: threadFolderMutationMessage(cause),
                   cause,
                 }),
             ),

@@ -4,6 +4,7 @@ import { IsoDateTime, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts"
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, ReceivedProjectIcon } from "./project.ts";
+import { ThreadFolder } from "./threadFolder.ts";
 
 /** Project summary shared by the V2 shell and application project APIs. */
 export const OrchestrationProjectShell = Schema.Struct({
@@ -22,6 +23,9 @@ export const OrchestrationProjectShell = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   projectIcon: Schema.optional(Schema.NullOr(ReceivedProjectIcon)),
   scripts: Schema.Array(ProjectScript),
+  // Organizational thread folders owned by this project. Omitted by servers
+  // that predate folders; clients without folder support ignore the field.
+  threadFolders: Schema.optional(Schema.Array(ThreadFolder)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

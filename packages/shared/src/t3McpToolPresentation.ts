@@ -316,6 +316,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),
   t3_project_list: tool(["List", "Listing", "Listed", "projects"], "project-list"),
+  t3_thread_folders_read: tool(["Read", "Reading", "Read", "thread folders"], "project-read"),
+  t3_thread_folders_update: tool(
+    ["Organize", "Organizing", "Organized", "thread folders"],
+    "project-update",
+  ),
   t3_project_read: tool(["Read", "Reading", "Read", "a project"], "project-read"),
   t3_project_create: tool(["Register", "Registering", "Registered", "a project"], "project-create"),
   t3_project_update: tool(["Update", "Updating", "Updated", "a project"], "project-update"),

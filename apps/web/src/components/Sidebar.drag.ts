@@ -137,7 +137,9 @@ export function createSidebarSortingStrategy(input: {
     let slimHeight = input.slimHeight;
     let headerScale: number | undefined;
     for (const [index, item] of items.entries()) {
-      if (item.kind === "marker") {
+      if (item.kind !== "thread") {
+        // Folder headers own no slot in a section order; they hold still
+        // while the dragged preview flattens the active rows around them.
         if (isShelfHeader(item)) {
           const height = rects[index]?.height;
           if (height) headerScale ??= height / 32;
@@ -235,6 +237,9 @@ export function createSidebarSortingStrategy(input: {
           )
         : 0;
     const result = items.map(() => hidden);
+    for (const [index, item] of items.entries()) {
+      if (item.kind === "folder") result[index] = stationary;
+    }
     let top = rects[0].top;
     for (const [projectedIndex, item] of projected.entries()) {
       if (isShelfHeader(item)) {

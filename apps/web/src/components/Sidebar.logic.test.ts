@@ -60,10 +60,21 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  sidebarFolderItemId,
+  buildThreadFolderMoveMenu,
+  sidebarListItemId,
 } from "./Sidebar.logic";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
-import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  ThreadFolderId,
+  type ThreadFolder,
+} from "@t3tools/contracts";
 
 import {
   DEFAULT_INTERACTION_MODE,
@@ -144,6 +155,51 @@ describe("resolveSidebarThreadSection", () => {
     expect(resolveSidebarThreadSection({ snoozed: false, settled: true, pinned: true })).toBe(
       "settled",
     );
+  });
+});
+
+describe("sidebar folder headers", () => {
+  const thread = (key: string, section: SidebarSection): SidebarListItem => ({
+    kind: "thread",
+    key,
+    section,
+  });
+  const folder = (folderId: string): SidebarListItem => ({
+    kind: "folder",
+    key: sidebarFolderItemId(folderId),
+    folderKey: folderId,
+  });
+
+  it("gives folder headers marker-prefixed ids that never collide with thread keys", () => {
+    expect(sidebarFolderItemId("folder-1")).toBe("sidebar-marker-folder-folder-1");
+    expect(sidebarFolderItemId("folder-1")).not.toContain(":");
+    expect(sidebarFolderItemId("folder-1")).not.toBe(
+      sidebarListItemId(thread("environment:thread-1", "active")),
+    );
+  });
+
+  it("groups active rows under a folder header without it owning a slot or a section", () => {
+    const items: SidebarListItem[] = [
+      { kind: "marker", marker: "pinned-divider" },
+      thread("environment:thread-1", "active"),
+      folder("folder-1"),
+      thread("environment:thread-2", "active"),
+      { kind: "marker", marker: "working-header" },
+      thread("environment:thread-3", "working"),
+    ];
+
+    // Dropping a row onto the folder header keeps it in the active section:
+    // the header is not a lifecycle boundary like a shelf header.
+    const drop = resolveSidebarDropTarget(
+      items,
+      "environment:thread-2",
+      sidebarFolderItemId("folder-1"),
+    );
+    expect(drop).not.toBeNull();
+    expect(drop!.section).toBe("active");
+    // Folder headers appear in no thread order; the active order stays complete.
+    expect(drop!.pinnedOrder).toEqual([]);
+    expect(drop!.activeOrder).toEqual(["environment:thread-1", "environment:thread-2"]);
   });
 });
 
@@ -2336,5 +2392,54 @@ describe("Working shelf (beta)", () => {
         unsnooze: false,
       });
     });
+  });
+});
+
+describe("folder move menu", () => {
+  const folder = (id: string, parentId: string | null): ThreadFolder => ({
+    id: ThreadFolderId.make(id),
+    parentId: parentId === null ? null : ThreadFolderId.make(parentId),
+    title: id,
+    orderKey: null,
+    threadIds: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  it("offers legal reparenting commands including root, and disables every choice without operate permission", () => {
+    const folders = [
+      folder("parent", null),
+      folder("moved", "parent"),
+      folder("child", "moved"),
+      folder("destination", null),
+    ];
+    const allowed = buildThreadFolderMoveMenu({
+      folders,
+      movedId: ThreadFolderId.make("moved"),
+      canOperate: true,
+    });
+    expect(allowed.item.disabled).toBe(false);
+    expect(allowed.item.children?.map((item) => item.label.trim())).toEqual([
+      "Project root",
+      "destination",
+    ]);
+    expect(
+      allowed.item.children?.map(
+        (item) => allowed.targets[Number(item.id.slice("move-to:".length))]?.parentId,
+      ),
+    ).toEqual([null, "destination"]);
+    const denied = buildThreadFolderMoveMenu({
+      folders,
+      movedId: ThreadFolderId.make("moved"),
+      canOperate: false,
+    });
+    expect(denied.item.disabled).toBe(true);
+    expect(denied.item.children?.every((item) => item.disabled)).toBe(true);
+    const alone = buildThreadFolderMoveMenu({
+      folders: [folder("alone", null)],
+      movedId: ThreadFolderId.make("alone"),
+      canOperate: true,
+    });
+    expect(alone.item.disabled).toBe(true);
+    expect(alone.item.children).toEqual([]);
   });
 });

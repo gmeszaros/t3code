@@ -42,6 +42,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires operate access to re-bucket the sidebar through folder commands", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectsMutateThreadFolders)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("authorizes background policy reporting and observation deliberately", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverReportClientActivity)).toBe(
       AuthOrchestrationReadScope,

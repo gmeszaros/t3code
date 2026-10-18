@@ -283,6 +283,10 @@
       "types": "./src/state/threadInbox.ts",
       "default": "./src/state/threadInbox.ts"
     },
+    "./state/thread-folders": {
+      "types": "./src/state/threadFolders.ts",
+      "default": "./src/state/threadFolders.ts"
+    },
     "./state/thread-relationships": {
       "types": "./src/state/threadRelationships.ts",
       "default": "./src/state/threadRelationships.ts"

@@ -6,6 +6,8 @@ import {
   type ProjectCreatePayload,
   type ProjectUpdatePayload,
   type ProjectSnapshot,
+  type ThreadFolder,
+  type ThreadFolderMutation,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -27,6 +29,13 @@ import {
   planProjectCommand,
   type ProjectCommand,
 } from "../orchestration-v2/ProjectCommands.ts";
+import {
+  decodeThreadFolderCommandRejection,
+  encodeThreadFolderCommandRejection,
+  type ThreadFolderCommand,
+  type ThreadFolderCommandRejection,
+  planThreadFolderCommand,
+} from "../orchestration-v2/ThreadFolderCommands.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
@@ -93,6 +102,7 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
       "list-threads",
       "delete-thread",
       "dispatch-project-command",
+      "dispatch-thread-folder-command",
     ]),
     projectId: Schema.optional(ProjectId),
     workspaceRoot: Schema.optional(Schema.String),
@@ -109,6 +119,12 @@ export type ProjectServiceError =
   | ProjectConflictError
   | ProjectNotEmptyError
   | ProjectOperationError;
+
+/**
+ * Folder commands fail with the planner's typed rejections directly; store and
+ * commit failures surface as `ProjectOperationError`.
+ */
+export type ThreadFolderServiceError = ThreadFolderCommandRejection | ProjectOperationError;
 
 export class ProjectService extends Context.Service<
   ProjectService,
@@ -142,6 +158,17 @@ export class ProjectService extends Context.Service<
     readonly listShells: (options?: {
       readonly projectIds?: ReadonlyArray<ProjectId>;
     }) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, ProjectOperationError>;
+    /**
+     * Apply one organizational thread folder command and return the project's
+     * post-command folder list. Placement only re-buckets threads in the
+     * sidebar; it never touches a thread's run, checkout, or lineage.
+     */
+    readonly mutateThreadFolders: (
+      mutation: ThreadFolderMutation,
+    ) => Effect.Effect<
+      { readonly threadFolders: ReadonlyArray<ThreadFolder> },
+      ThreadFolderServiceError
+    >;
   }
 >()("t3/project/ProjectService") {}
 
@@ -295,6 +322,101 @@ export const make = Effect.gen(function* () {
           rejection ?? receipt.error ?? "The command was previously rejected.",
         );
     }
+  });
+
+  /**
+   * Plan one folder command against the project's rows and folder list read
+   * under its lock, then commit its event or its rejection. Thread placement
+   * validates the thread through the projection inside the same lock window.
+   */
+  const mutateThreadFolders: ProjectService["Service"]["mutateThreadFolders"] = Effect.fn(
+    "ProjectService.mutateThreadFolders",
+  )(function* (mutation) {
+    const { projectId } = mutation;
+    const command = mutation as ThreadFolderCommand;
+    const folderError = (cause: unknown) =>
+      new ProjectOperationError({
+        operation: "dispatch-thread-folder-command",
+        projectId,
+        cause,
+      });
+    const commitFolder = Effect.gen(function* () {
+      const project = Option.getOrUndefined(yield* readRow(projectId, { includeDeleted: true }));
+      const placementTarget =
+        command.type === "threadFolder.placeThread"
+          ? yield* readPlacementTarget(command.threadId, projectId).pipe(
+              Effect.mapError(folderError),
+            )
+          : undefined;
+      const now = yield* DateTime.now;
+      const eventId = yield* idAllocator.allocate
+        .event({ commandId: command.commandId })
+        .pipe(Effect.mapError(folderError));
+      const planned = planThreadFolderCommand({
+        command,
+        state: {
+          project,
+          folders: project?.threadFolders ?? [],
+          ...(placementTarget === undefined ? {} : { placementTarget }),
+        },
+        eventId,
+        now,
+      });
+      if (Result.isSuccess(planned)) {
+        const { receipt } = yield* eventSink.commitProjectCommand({
+          commandId: command.commandId,
+          projectId,
+          commandType: command.type,
+          acceptedAt: now,
+          event: planned.success,
+        });
+        return receipt;
+      }
+      return yield* eventSink.commitRejectedProjectCommand({
+        commandId: command.commandId,
+        projectId,
+        commandType: command.type,
+        rejectedAt: now,
+        error: encodeThreadFolderCommandRejection(planned.failure),
+      });
+    });
+    const receipt = yield* projectLocks
+      .withLock(projectId, commitFolder)
+      .pipe(Effect.mapError(folderError));
+    if (receipt.projectId !== projectId || receipt.commandType !== command.type) {
+      return yield* folderError(
+        `Command ${command.commandId} was already used by ${receipt.commandType} for ${receipt.projectId}.`,
+      );
+    }
+    // A retried command re-plans against the state it already produced, so its
+    // first receipt, not the new plan, decides the outcome.
+    if (receipt.status === "accepted") {
+      const row = yield* readRow(projectId);
+      if (Option.isNone(row)) {
+        return yield* new ProjectOperationError({
+          operation: "read-project",
+          projectId,
+          cause: "The accepted thread folder command did not produce a project row.",
+        });
+      }
+      return { threadFolders: row.value.threadFolders };
+    }
+    const rejection = Option.getOrUndefined(decodeThreadFolderCommandRejection(receipt.error));
+    if (rejection !== undefined) return yield* rejection;
+    return yield* folderError(receipt.error ?? "The command was previously rejected.");
+  });
+
+  /** One projection read that answers "does this thread exist in this project". */
+  const readPlacementTarget = Effect.fn("ProjectService.readPlacementTarget")(function* (
+    threadId: ThreadId,
+    projectId: ProjectId,
+  ) {
+    const records = yield* threadProjections.getThreadRecords(threadId, []);
+    const thread = records.thread;
+    return {
+      exists: thread.deletedAt === null,
+      belongsToProject: thread.projectId === projectId && thread.deletedAt === null,
+    };
   });
 
   const readCommitted = Effect.fn("ProjectService.readCommitted")(function* (projectId: ProjectId) {
@@ -586,6 +708,7 @@ export const make = Effect.gen(function* () {
     snapshot,
     getShell,
     listShells,
+    mutateThreadFolders,
   });
 });
 

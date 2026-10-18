@@ -112,6 +112,20 @@ rename a thread, regenerate its title, or link and unlink a pull request. These 
 appear on web, desktop, and mobile without requiring the originating browser to remain
 open.
 
+## Organize threads in folders
+
+On web and desktop, use **Move to folder > New folder** in a sidebar thread's
+context menu to create a folder and place the thread in it. A folder's menu lets you
+rename it, create subfolders, or move it elsewhere in the same project.
+Removing a folder keeps its threads and subfolders under its parent, or
+ungrouped at the project root.
+
+Folders organize conversations without changing their working directories or
+delegated ownership. With the Working section enabled, running threads still
+appear there with their folder path and return to their folder when work ends.
+Folder organization is saved by the environment; clients without folder support
+continue to show the threads in their usual lists.
+
 ### Fold working threads (beta)
 
 Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →

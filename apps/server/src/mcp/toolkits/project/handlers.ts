@@ -250,6 +250,28 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         .pipe(Effect.mapError(projectFailure));
     }),
   ),
+  t3_thread_folders_read: McpToolAccess.reads((input: { readonly projectId: ProjectId }) =>
+    Effect.gen(function* () {
+      const projects = yield* access;
+      const shell = yield* projects.getShell(input.projectId).pipe(Effect.mapError(projectFailure));
+      if (Option.isNone(shell)) return yield* unavailable();
+      return { threadFolders: shell.value.threadFolders ?? [] };
+    }),
+  ),
+  t3_thread_folders_update: McpToolAccess.writesEnvironment((input) =>
+    Effect.gen(function* () {
+      const projects = yield* Project.ProjectService;
+      return yield* projects
+        .mutateThreadFolders(input.mutation)
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "ProjectOperationError"
+              ? unavailable()
+              : new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
+          ),
+        );
+    }),
+  ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const projects = yield* Project.ProjectService;

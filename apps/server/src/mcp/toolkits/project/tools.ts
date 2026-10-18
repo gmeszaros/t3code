@@ -13,6 +13,8 @@ import {
   ProjectCreatePayload,
   ProjectUpdatePayload,
   ProjectId,
+  ThreadFolderMutation,
+  ThreadFolderMutationResult,
   OrchestratorMcpFailure,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -88,6 +90,22 @@ const ProjectDeleteTool = Tool.make("t3_project_delete", {
     "Delete a project using the existing project deletion lifecycle. Nonempty projects require force=true. This does not delete the repository directory or promise a deleted-thread count.",
   parameters: Schema.Struct({ projectId: ProjectId, force: Schema.optionalKey(Schema.Boolean) }),
 }).annotate(Tool.Destructive, true);
+const ThreadFoldersReadTool = Tool.make("t3_thread_folders_read", {
+  ...shared,
+  description:
+    "Read the authoritative organizational thread folders of one project in this environment. Folders do not change execution workspaces or delegated ownership.",
+  parameters: Schema.Struct({ projectId: ProjectId }),
+  success: ThreadFolderMutationResult,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+const ThreadFoldersUpdateTool = Tool.make("t3_thread_folders_update", {
+  ...shared,
+  description:
+    "Create, rename, move, reorder, remove a project thread folder, or place/ungroup a thread through the app's project service. Supply a stable commandId for retries of the same intent. Removal lifts children and members to the parent; no thread is deleted or interrupted. Requires full access. Read current folders with t3_thread_folders_read first.",
+  parameters: Schema.Struct({ mutation: ThreadFolderMutation }),
+  success: ThreadFolderMutationResult,
+}).annotate(Tool.Destructive, true);
 const ProjectCloneTool = Tool.make("t3_project_clone", {
   ...shared,
   description:
@@ -159,4 +177,6 @@ export const ProjectToolkit = Toolkit.make(
   ProjectUpdateTool,
   ProjectDeleteTool,
   ProjectCloneTool,
+  ThreadFoldersReadTool,
+  ThreadFoldersUpdateTool,
 );
