@@ -133,7 +133,7 @@ export interface ThreadFolderGrouping<TThread> {
  * `workingThreadIds` counts running members even when the caller's list
  * excludes them (the Working shelf folds them away).
  */
-export function groupThreadsByFolder<TThread extends { readonly id: string }>(input: {
+function groupThreadsByFolder<TThread extends { readonly id: string }>(input: {
   readonly folders: readonly ThreadFolder[];
   readonly threads: readonly TThread[];
   readonly workingThreadIds?: ReadonlySet<string>;
