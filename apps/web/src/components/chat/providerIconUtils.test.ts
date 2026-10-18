@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { getDisplayModelName, getProviderRowLabel } from "./providerIconUtils";
+import {
+  getDisplayModelName,
+  getProviderInstanceLabel,
+  getProviderRowLabel,
+} from "./providerIconUtils";
+
+describe("getProviderInstanceLabel", () => {
+  it("distinguishes the configured account label from its harness", () => {
+    expect(getProviderInstanceLabel("GLM Coding Plan", "OpenCode")).toBe(
+      "GLM Coding Plan (OpenCode)",
+    );
+    expect(getProviderInstanceLabel("Personal", "ZCode")).toBe("Personal (ZCode)");
+  });
+
+  it("preserves names that already identify their harness", () => {
+    expect(getProviderInstanceLabel("OpenCode", "OpenCode")).toBe("OpenCode");
+    expect(getProviderInstanceLabel("ZCode Personal", "ZCode")).toBe("ZCode Personal");
+    expect(getProviderInstanceLabel("opencode work", "OpenCode")).toBe("opencode work");
+  });
+});
 
 describe("getProviderRowLabel", () => {
   it("shows a sub-provider named after its provider on its own", () => {

@@ -3,6 +3,8 @@ import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { getProviderInstanceLabel } from "./providerIconUtils";
+import { providerClients } from "../settings/providerDriverMeta";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
@@ -17,7 +19,10 @@ import {
  * instances get their user-authored name (e.g. "Codex Personal — Unavailable.").
  */
 function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
-  const label = entry.displayName;
+  const label = getProviderInstanceLabel(
+    entry.displayName,
+    providerClients.get(entry.driverKind)?.label ?? entry.driverKind,
+  );
   if (!entry.enabled || entry.status === "disabled") {
     return `${label} — Disabled in settings.`;
   }
@@ -159,14 +164,18 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const isHovered = hoveredInstanceId === entry.instanceId;
             const showNewBadge = props.newBadgeInstanceIds?.has(entry.instanceId) ?? false;
             const showInstanceBadge = shouldShowInstanceBadge(entry, props.instanceEntries);
+            const instanceLabel = getProviderInstanceLabel(
+              entry.displayName,
+              providerClients.get(entry.driverKind)?.label ?? entry.driverKind,
+            );
 
             const tooltip = isUnavailable
               ? describeUnavailableInstance(entry)
               : isContextDisabled
-                ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
+                ? (props.getDisabledInstanceTooltip?.(entry) ?? instanceLabel)
                 : showNewBadge
-                  ? `${entry.displayName} — New`
-                  : entry.displayName;
+                  ? `${instanceLabel} — New`
+                  : instanceLabel;
 
             const button = (
               <Toolbar.Button
@@ -192,8 +201,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                   isUnavailable || isContextDisabled
                     ? tooltip
                     : showNewBadge
-                      ? `${entry.displayName}, new`
-                      : entry.displayName
+                      ? `${instanceLabel}, new`
+                      : instanceLabel
                 }
               >
                 <ProviderInstanceIcon
