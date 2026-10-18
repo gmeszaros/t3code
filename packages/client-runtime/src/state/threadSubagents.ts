@@ -1,11 +1,12 @@
 /**
- * The subagent roster for one turn, and the compact label the mobile composer
- * pill renders for it.
+ * The agent roster behind the mobile composer pill and its Agents sheet.
  *
- * Scoped to a run rather than the whole thread: a thread accumulates every
- * subagent it ever spawned, while the pill and its sheet answer "what is this
- * turn doing right now". Statuses come from the v2 projection directly, so
- * this stays a pure fold over `runs` and `subagents`.
+ * The focus run is the active one, else the most recent run that spawned
+ * agents, and the roster is its subagents plus every still-active child from
+ * older runs: an async delegation outlives the turn that launched it, so a
+ * run-scoped roster would hide live work the server still reports through
+ * task_status. Settled children of older runs stay out; the thread's lineage
+ * panel is the history view.
  */
 import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
@@ -19,7 +20,10 @@ type Subagent = OrchestrationV2Subagent;
 type RunId = Projection["runs"][number]["id"];
 
 export interface ThreadTurnSubagents {
-  /** The run the roster belongs to: the active one, else the most recent one that spawned agents. */
+  /**
+   * The run the roster is anchored to: the active one, else the most recent
+   * one that spawned agents. Live children from older runs appear alongside it.
+   */
   readonly runId: RunId | null;
   readonly turnActive: boolean;
   /** Spawn order: startedAt, falling back to updatedAt for agents that never started. */
@@ -52,7 +56,13 @@ export function deriveThreadTurnSubagents(
   );
   const runId = activeRun?.id ?? latestUpdated.runId;
   const subagents = copySorted(
-    projection.subagents.filter((subagent) => subagent.runId === runId),
+    projection.subagents.filter(
+      (subagent) =>
+        subagent.runId === runId ||
+        // Live work keeps its row across turns: only the launching run changes
+        // when an async delegation outlives its parent turn.
+        isActiveSubagentStatus(subagent.status),
+    ),
     (left, right) => orderKey(left) - orderKey(right) || left.id.localeCompare(right.id),
   );
   if (subagents.length === 0) return null;

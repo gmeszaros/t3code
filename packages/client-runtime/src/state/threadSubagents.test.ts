@@ -51,19 +51,101 @@ describe("deriveThreadTurnSubagents", () => {
     expect(deriveThreadTurnSubagents({ runs: [activeRun], subagents: [] })).toBeNull();
   });
 
-  it("scopes the roster to the active run and orders it by start time", () => {
+  it("keeps the active run's roster ordered by start time and adds live children from older runs", () => {
     const turn = deriveThreadTurnSubagents({
       runs: [run("run-0", "completed"), activeRun],
       subagents: [
         subagent({ id: "b", startedAt: at("2026-06-20T00:00:05.000Z") }),
         subagent({ id: "old", runId: RunId.make("run-0") }),
+        subagent({
+          id: "settled-old",
+          runId: RunId.make("run-0"),
+          status: "completed",
+          startedAt: at("2026-06-20T00:00:01.000Z"),
+          completedAt: at("2026-06-20T00:00:04.000Z"),
+          updatedAt: at("2026-06-20T00:00:04.000Z"),
+        }),
         subagent({ id: "a", startedAt: at("2026-06-20T00:00:02.000Z") }),
       ],
     });
 
     expect(turn?.runId).toBe("run-1");
-    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["old", "a", "b"]);
     expect(turn?.turnActive).toBe(true);
+  });
+
+  it("lists async children from earlier parent turns next to the current turn's", () => {
+    // Regression: three delegations launched in three different parent runs.
+    // The first two parent turns already settled while their children keep
+    // running, so a run-scoped roster would have shown only child-r6.
+    const turn = deriveThreadTurnSubagents({
+      runs: [run("run-1", "completed"), run("run-2", "completed"), run("run-3", "running")],
+      subagents: [
+        subagent({
+          id: "child-r4",
+          runId: RunId.make("run-1"),
+          origin: "provider_native",
+          driver: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claude"),
+          startedAt: at("2026-06-20T00:00:00.000Z"),
+          updatedAt: at("2026-06-20T00:02:00.000Z"),
+        }),
+        subagent({
+          id: "child-r5",
+          runId: RunId.make("run-2"),
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          startedAt: at("2026-06-20T00:01:00.000Z"),
+          updatedAt: at("2026-06-20T00:02:01.000Z"),
+        }),
+        subagent({
+          id: "child-r6",
+          runId: RunId.make("run-3"),
+          providerInstanceId: ProviderInstanceId.make("zcode"),
+          startedAt: at("2026-06-20T00:03:00.000Z"),
+          updatedAt: at("2026-06-20T00:03:10.000Z"),
+        }),
+      ],
+    });
+
+    expect(turn?.runId).toBe("run-3");
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["child-r4", "child-r5", "child-r6"]);
+    expect(turn?.liveCount).toBe(3);
+    expect(resolveSubagentPillSegment(turn)?.label).toBe("3/3");
+  });
+
+  it("keeps older active siblings visible when the newest child settles", () => {
+    const turn = deriveThreadTurnSubagents({
+      runs: [run("run-1", "completed"), run("run-2", "running")],
+      subagents: [
+        subagent({ id: "older-live", runId: RunId.make("run-1") }),
+        subagent({
+          id: "newest-done",
+          runId: RunId.make("run-2"),
+          status: "completed",
+          startedAt: at("2026-06-20T00:02:00.000Z"),
+          completedAt: at("2026-06-20T00:03:00.000Z"),
+          updatedAt: at("2026-06-20T00:03:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["older-live", "newest-done"]);
+    expect(turn?.liveCount).toBe(1);
+    expect(turn?.settledCount).toBe(1);
+    expect(resolveSubagentPillSegment(turn)?.label).toBe("1/2");
+  });
+
+  it("shows a live async child while a newer turn runs without agents", () => {
+    const turn = deriveThreadTurnSubagents({
+      runs: [run("run-1", "completed"), run("run-2", "running")],
+      subagents: [subagent({ id: "async-child", runId: RunId.make("run-1") })],
+    });
+
+    expect(turn?.runId).toBe("run-2");
+    expect(turn?.turnActive).toBe(true);
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["async-child"]);
+    expect(resolveSubagentPillSegment(turn)?.label).toBe("1/1");
   });
 
   it("falls back to the most recently updated agent's run once the turn settles", () => {
@@ -83,6 +165,32 @@ describe("deriveThreadTurnSubagents", () => {
     expect(turn?.runId).toBe("run-2");
     expect(turn?.turnActive).toBe(false);
     expect(turn?.subagents.map((entry) => entry.id)).toEqual(["recent"]);
+  });
+
+  it("keeps the roster readable after the focus run settles while an older child still works", () => {
+    const turn = deriveThreadTurnSubagents({
+      runs: [run("run-1", "completed"), run("run-2", "completed")],
+      subagents: [
+        subagent({
+          id: "older-live",
+          runId: RunId.make("run-1"),
+          startedAt: at("2026-06-20T00:00:00.000Z"),
+          updatedAt: at("2026-06-20T00:01:00.000Z"),
+        }),
+        subagent({
+          id: "newest-done",
+          runId: RunId.make("run-2"),
+          status: "completed",
+          startedAt: at("2026-06-20T00:02:00.000Z"),
+          completedAt: at("2026-06-20T00:03:00.000Z"),
+          updatedAt: at("2026-06-20T00:03:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(turn?.turnActive).toBe(false);
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["older-live", "newest-done"]);
+    expect(resolveSubagentPillSegment(turn)?.label).toBe("1/2");
   });
 
   it("counts idle as neither working nor done", () => {
