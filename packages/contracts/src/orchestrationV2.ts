@@ -1473,6 +1473,50 @@ const OrchestrationV2SecretRequestFields = {
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
 
+export const OrchestrationV2ResetCreditRequestStatus = Schema.Literals([
+  "pending",
+  "approved",
+  "declined",
+  "cancelled",
+]);
+export type OrchestrationV2ResetCreditRequestStatus =
+  typeof OrchestrationV2ResetCreditRequestStatus.Type;
+
+/**
+ * How a user-approved reset redemption ended. Mirrors the provider drivers'
+ * own outcome set, with `failed` for a provider that answered and refused,
+ * and `unconfirmed` for a redemption whose answer was lost — the provider may
+ * still have applied it. An accepted reset is not verified recovery: no turn
+ * has run on the model yet.
+ */
+export const OrchestrationV2ResetCreditOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+  "failed",
+  "unconfirmed",
+]);
+export type OrchestrationV2ResetCreditOutcome = typeof OrchestrationV2ResetCreditOutcome.Type;
+
+/**
+ * A quota reset an agent asked the user to approve. The item carries the
+ * request and how it ended; the redemption itself runs through the provider
+ * driver's own reset path once, and only after, the user approves.
+ */
+const OrchestrationV2ResetCreditRequestFields = {
+  type: Schema.Literal("reset_credit_request"),
+  label: TrimmedNonEmptyString,
+  reason: Schema.String,
+  providerInstanceId: ProviderInstanceId,
+  resetWindowId: Schema.Literals(["five_hour", "weekly"]),
+  resetAccountIdentity: Schema.optional(TrimmedNonEmptyString),
+  requestStatus: OrchestrationV2ResetCreditRequestStatus,
+  outcome: Schema.optional(OrchestrationV2ResetCreditOutcome),
+  /** The user approved, but the redemption hit a follow-up problem worth showing. */
+  warning: Schema.optional(TrimmedNonEmptyString),
+} as const;
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1655,6 +1699,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     ...OrchestrationV2SecretRequestFields,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    ...OrchestrationV2ResetCreditRequestFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2444,6 +2492,10 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     ...OrchestrationV2SecretRequestFields,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    ...OrchestrationV2ResetCreditRequestFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3276,6 +3328,27 @@ const OrchestrationV2InternalCommand = Schema.Union([
     reason: Schema.String,
     placeholder: Schema.optional(Schema.String),
     secretStatus: OrchestrationV2SecretRequestStatus,
+  }),
+  /**
+   * Records or updates a quota reset an agent asked the user to approve, and
+   * later the redemption's outcome. Internal so no client can approve on the
+   * request's behalf: approval arrives only through the answer RPC.
+   */
+  Schema.Struct({
+    type: Schema.Literal("reset_credit_request.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    nodeId: NodeId,
+    turnItemId: TurnItemId,
+    label: TrimmedNonEmptyString,
+    reason: Schema.String,
+    providerInstanceId: ProviderInstanceId,
+    resetWindowId: Schema.Literals(["five_hour", "weekly"]),
+    resetAccountIdentity: Schema.optional(TrimmedNonEmptyString),
+    requestStatus: OrchestrationV2ResetCreditRequestStatus,
+    outcome: Schema.optional(OrchestrationV2ResetCreditOutcome),
+    warning: Schema.optional(TrimmedNonEmptyString),
   }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;

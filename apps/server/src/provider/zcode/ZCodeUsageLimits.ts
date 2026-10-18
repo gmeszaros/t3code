@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type {
   ServerProviderResetCreditWindow,
+  ServerProviderResetCreditWindowsUnavailable,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import { DateTime, Effect, FileSystem, Redacted, Schema } from "effect";
@@ -41,10 +42,13 @@ const QuotaEnvelope = Schema.Struct({
 });
 const ResetEnvelope = Schema.Struct({
   code: Schema.Number,
-  data: Schema.Struct({
-    available_five_hour_resets: Schema.Array(Schema.Struct({ expire_at: EpochMillis })),
-    available_week_resets: Schema.Array(Schema.Struct({ expire_at: EpochMillis })),
-  }),
+  // A refusal carries no data; only an acceptance names the banked resets.
+  data: Schema.optional(
+    Schema.Struct({
+      available_five_hour_resets: Schema.Array(Schema.Struct({ expire_at: EpochMillis })),
+      available_week_resets: Schema.Array(Schema.Struct({ expire_at: EpochMillis })),
+    }),
+  ),
 });
 const decodeQuota = HttpClientResponse.schemaBodyJson(QuotaEnvelope);
 const decodeResets = HttpClientResponse.schemaBodyJson(ResetEnvelope);
@@ -52,6 +56,24 @@ const unknownResetWindows: ReadonlyArray<ServerProviderResetCreditWindow> = [
   { id: "five_hour", label: "5-hour resets", availableCount: null },
   { id: "weekly", label: "Weekly resets", availableCount: null },
 ];
+/** A reset-status read that could not say how many resets are banked. */
+interface ResetStatusRead {
+  readonly windows: ReadonlyArray<ServerProviderResetCreditWindow>;
+  readonly unavailable?: ServerProviderResetCreditWindowsUnavailable;
+}
+const unsignedResetStatus = (): ResetStatusRead => ({
+  windows: unknownResetWindows,
+  unavailable: {
+    reason: "notSignedIn",
+    message: "Sign in with the native Z.AI Coding Plan account to see banked resets.",
+  },
+});
+// The reason is fixed text: the raw HTTP or transport error can carry
+// credentials, so it never reaches the snapshot.
+const failedResetStatus = (message: string): ResetStatusRead => ({
+  windows: unknownResetWindows,
+  unavailable: { reason: "probeFailed", message },
+});
 
 export const zcodeQuotaWindows = (
   limits: (typeof QuotaEnvelope.Type)["data"]["limits"],
@@ -77,7 +99,7 @@ export const zcodeQuotaWindows = (
   });
 
 export const zcodeResetWindows = (
-  data: (typeof ResetEnvelope.Type)["data"],
+  data: NonNullable<(typeof ResetEnvelope.Type)["data"]>,
   now: number,
 ): ReadonlyArray<ServerProviderResetCreditWindow> =>
   unknownResetWindows.map((window) => {
@@ -175,7 +197,7 @@ export const readZCodeUsageLimits = Effect.fn("readZCodeUsageLimits")(function* 
             );
     const resets =
       credentials.zcodeToken === undefined || credentials.accountToken === undefined
-        ? Effect.succeed(unknownResetWindows)
+        ? Effect.succeed(unsignedResetStatus())
         : client
             .execute(
               HttpClientRequest.get(RESET_STATUS_URL).pipe(
@@ -191,19 +213,29 @@ export const readZCodeUsageLimits = Effect.fn("readZCodeUsageLimits")(function* 
             .pipe(
               Effect.flatMap(HttpClientResponse.filterStatusOk),
               Effect.flatMap(decodeResets),
-              Effect.map((body) =>
-                body.code === 0
-                  ? zcodeResetWindows(body.data, Date.parse(checkedAt))
-                  : unknownResetWindows,
-              ),
+              Effect.map((body) => {
+                if (body.code !== 0)
+                  return failedResetStatus("The provider refused to report banked resets.");
+                return body.data === undefined
+                  ? failedResetStatus("Banked resets could not be read.")
+                  : { windows: zcodeResetWindows(body.data, Date.parse(checkedAt)) };
+              }),
               Effect.timeout("5 seconds"),
-              Effect.orElseSucceed(() => unknownResetWindows),
+              // Every failure path — transport, status, timeout, decode — lands
+              // here with the same fixed text; zero and unknown stay distinct
+              // through the window counts above.
+              Effect.catch(() =>
+                Effect.succeed(failedResetStatus("Banked resets could not be read.")),
+              ),
             );
-    const result = yield* Effect.all(
-      { limits: quota, resetCreditWindows: resets },
-      { concurrency: "unbounded" },
-    );
-    return { ...result.limits, resetCreditWindows: result.resetCreditWindows };
+    const result = yield* Effect.all({ limits: quota, resets }, { concurrency: "unbounded" });
+    return {
+      ...result.limits,
+      resetCreditWindows: result.resets.windows,
+      ...(result.resets.unavailable === undefined
+        ? {}
+        : { resetCreditWindowsUnavailable: result.resets.unavailable }),
+    };
   }).pipe(
     Effect.scoped,
     Effect.provideService(Headers.CurrentRedactedNames, [
@@ -221,18 +253,25 @@ export const readZCodeUsageLimits = Effect.fn("readZCodeUsageLimits")(function* 
         message: "ZCode usage could not be read from the native sign-in.",
       }),
       resetCreditWindows: unknownResetWindows,
+      resetCreditWindowsUnavailable: failedResetStatus("Banked resets could not be read.")
+        .unavailable,
     })),
   );
 });
 
 const ResetUseEnvelope = Schema.Struct({
   code: Schema.Number,
-  data: Schema.Struct({ used: Schema.Literal(true) }),
+  data: Schema.optional(Schema.Struct({ used: Schema.Literal(true) })),
 });
 const decodeResetUse = HttpClientResponse.schemaBodyJson(ResetUseEnvelope);
 export class ZCodeResetError extends Schema.TaggedError<ZCodeResetError>()("ZCodeResetError", {
   detail: Schema.String,
 }) {}
+
+class ZCodeResetUnconfirmedError extends Schema.TaggedError<ZCodeResetUnconfirmedError>()(
+  "ZCodeResetUnconfirmedError",
+  {},
+) {}
 
 export const consumeZCodeResetCredit = Effect.fn("consumeZCodeResetCredit")(function* (input: {
   readonly environment: NodeJS.ProcessEnv;
@@ -260,5 +299,6 @@ export const consumeZCodeResetCredit = Effect.fn("consumeZCodeResetCredit")(func
   const body = yield* decodeResetUse(yield* HttpClientResponse.filterStatusOk(response));
   if (body.code !== 0)
     return yield* new ZCodeResetError({ detail: "ZCode did not confirm the reset." });
+  if (body.data?.used !== true) return yield* new ZCodeResetUnconfirmedError();
   return "reset" as const;
 });

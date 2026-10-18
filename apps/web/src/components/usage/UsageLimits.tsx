@@ -6,6 +6,7 @@ import {
   ServerProvider,
   ServerProviderResetCredits,
   type ServerProviderResetCreditWindow,
+  type ServerProviderResetCreditWindowsUnavailable,
   ServerProviderUsageWindow,
   UsageProviderKind,
 } from "@t3tools/contracts";
@@ -304,13 +305,17 @@ export function resetCreditsSummary(
 
 export function ResetCreditWindows({
   windows,
+  unavailable,
   now,
 }: {
   readonly windows: ReadonlyArray<ServerProviderResetCreditWindow> | undefined;
+  /** Why the counts are unknown, when the provider could not report them. */
+  readonly unavailable?: ServerProviderResetCreditWindowsUnavailable | undefined;
   readonly now: number;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   if (!windows?.length) return null;
+  const countsUnknown = windows.every((window) => window.availableCount === null);
   return (
     <div
       className="flex flex-col gap-1 text-xs text-muted-foreground"
@@ -332,6 +337,7 @@ export function ResetCreditWindows({
           </span>
         ),
       )}
+      {countsUnknown && unavailable?.message ? <span>{unavailable.message}</span> : null}
     </div>
   );
 }
@@ -342,11 +348,14 @@ export function ResetCredits({
   input,
   credits,
   now,
+  windowLabel,
 }: {
   readonly environmentId: EnvironmentId;
   readonly input: ProviderConsumeResetCreditInput;
   readonly credits: ServerProviderResetCredits;
   readonly now: number;
+  /** Names the quota window the credit clears, when the credit is window-scoped. */
+  readonly windowLabel?: string | undefined;
 }) {
   const { canManageProviders, confirming, setConfirming, busy, status, redeem } = useResetCredit(
     environmentId,
@@ -370,6 +379,7 @@ export function ResetCredits({
       ) : null}
       {status ? <span className="text-foreground">{status}</span> : null}
       <ResetCreditDialog
+        windowLabel={windowLabel}
         open={confirming}
         onOpenChange={setConfirming}
         onConfirm={() => void redeem()}

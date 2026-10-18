@@ -59,6 +59,26 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires the destination operate grant to answer reset approvals", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const answer = createCommandPermissions(
+          runtime,
+          WS_METHODS.resetCreditRequestsAnswerRequest,
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(answer.permissionAtom(env))).toBe(false);
+        expect((yield* answer.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(answer.permissionAtom(env))).toBe(true);
+        yield* answer.authorize(registry, env);
+        expect(registry.get(answer.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
   it.effect("requires the destination settings grant to run storage cleanup", () =>
     Effect.scoped(
       Effect.gen(function* () {

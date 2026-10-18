@@ -51,6 +51,19 @@ export const ServerProviderResetCreditWindow = Schema.Struct({
 export type ServerProviderResetCreditWindow = typeof ServerProviderResetCreditWindow.Type;
 
 /**
+ * Why the per-window reset inventory is not a known count, when it is not.
+ * `notSignedIn` means this environment cannot see the account's banked resets
+ * at all; `probeFailed` means the read failed this time. A reported zero is a
+ * fact and never carries this.
+ */
+export const ServerProviderResetCreditWindowsUnavailable = Schema.Struct({
+  reason: Schema.Literals(["notSignedIn", "probeFailed"]),
+  message: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderResetCreditWindowsUnavailable =
+  typeof ServerProviderResetCreditWindowsUnavailable.Type;
+
+/**
  * Subscription usage the provider knows about the signed-in account.
  *
  * `unavailable` distinguishes an account that can never report windows (API
@@ -64,6 +77,7 @@ export const ServerProviderUsageLimits = Schema.Struct({
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
   resetCreditWindows: Schema.optional(Schema.Array(ServerProviderResetCreditWindow)),
+  resetCreditWindowsUnavailable: Schema.optional(ServerProviderResetCreditWindowsUnavailable),
   /** Provider-owned usage settings when quota windows are not available to the client. */
   externalUsage: Schema.optional(
     Schema.Struct({
@@ -168,6 +182,95 @@ export const ProviderConsumeResetCreditResult = Schema.Struct({
   warning: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderConsumeResetCreditResult = typeof ProviderConsumeResetCreditResult.Type;
+
+/**
+ * An agent's request to spend one banked reset credit. The request never
+ * redeems on its own: the server asks the user in the requesting thread and
+ * redeems only after an explicit approval there.
+ */
+export const ProviderQuotaResetRequestInput = Schema.Struct({
+  resetWindowId: Schema.optional(Schema.Literals(["five_hour", "weekly"])).annotate({
+    description:
+      "Which quota window to redeem a reset for. Omit it only when you do not know which window is exhausted: with exactly one window holding banked resets it is chosen for you; otherwise the result lists every window and you must retry naming one.",
+  }),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
+  ).annotate({ description: "How long to wait for the user's answer. Default 10 minutes." }),
+  clientRequestId: Schema.optional(TrimmedNonEmptyString).annotate({
+    description:
+      "Reuse for a caller-initiated retry of an uncertain result within 60 seconds in the same process: it uses the same approval and provider idempotency key. After restart or expiry, reconcile the uncertain operation before approving another reset; provider key retention is undocumented. Settled results replay without POST. Use a new id only for a NEW separately approved reset.",
+  }),
+});
+export type ProviderQuotaResetRequestInput = typeof ProviderQuotaResetRequestInput.Type;
+
+/**
+ * How an authorized quota reset request ended. `accepted` means the provider
+ * confirmed the redemption; it is not verified recovery — only a successful
+ * turn on the model can establish that. `unconfirmed` means the redemption's
+ * answer was lost after approval: the provider may already have consumed the
+ * credit, so nothing may claim it was not redeemed.
+ */
+export const ProviderQuotaResetRequestResult = Schema.Struct({
+  status: Schema.Literals([
+    "accepted",
+    "unconfirmed",
+    "unavailable",
+    "error",
+    "declined",
+    "approval_cancelled",
+    "approval_timed_out",
+    "window_ambiguous",
+    "no_credit_available",
+    "unsupported",
+    "failed",
+  ]).annotate({
+    description:
+      "accepted: the user approved and the provider confirmed the redemption. unconfirmed: the user approved, the redemption ran, but its answer was lost — the provider may have applied the reset and spent the credit; retrying this same request re-sends the same idempotency key, subject to provider key retention; after restart or the local retry window it requires reconciliation. declined/cancelled/timed_out: no redemption was attempted. window_ambiguous: several windows could be redeemed, so name a resetWindowId. no_credit_available: the account banks no usable reset credit, so nothing was asked. unsupported: this provider cannot redeem resets through this tool. unavailable: native sign-in or inventory is unavailable. error: the inventory probe failed. failed: the user approved but the provider answered and refused (see outcome and note).",
+  }),
+  resetWindowId: Schema.optional(Schema.Literals(["five_hour", "weekly"])),
+  /** The provider's own redemption outcome, when one was attempted and answered. */
+  outcome: Schema.optional(ProviderConsumeResetCreditOutcome),
+  /** Banked resets per window as the provider reported them for this request. */
+  resetCreditWindows: Schema.optional(Schema.Array(ServerProviderResetCreditWindow)),
+  /**
+   * Why the banked-reset inventory above is unknown rather than a count, when
+   * it is: the account is not signed in, or the read failed this time.
+   */
+  resetCreditWindowsUnavailable: Schema.optional(ServerProviderResetCreditWindowsUnavailable),
+  /**
+   * Quota windows as the account reported them before this call
+   * (a replay reads current usage, not historical pre-redemption usage): each window's usage and its `resetsAt` — the time the QUOTA window
+   * resets, which is not the banked credit's own expiry. A `resetsAt` carries
+   * an explicit UTC offset when the provider evidenced one; a window without
+   * one has an unknown reset time, and no offset is ever invented here.
+   */
+  quotaBefore: Schema.optional(Schema.Array(ServerProviderUsageWindow)),
+  quotaState: Schema.optional(Schema.Literals(["supported", "unavailable", "error"])),
+  quotaSchedule: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        kind: ServerProviderUsageWindow.fields.kind,
+        exhausted: Schema.Boolean,
+        resetsAt: Schema.optional(Schema.String),
+        timezone: Schema.Literals(["explicit", "unknown"]),
+      }),
+    ),
+  ),
+  /**
+   * Usage windows re-read after an accepted redemption; percentages are not
+   * proof of recovery. Present only when the server re-read usage at
+   * redemption time — a replay of an earlier result may omit it.
+   */
+  quotaAfter: Schema.optional(Schema.Array(ServerProviderUsageWindow)),
+  /**
+   * Always false: this tool never runs a generation probe, so it can never
+   * claim the model works again. Verify by running a turn.
+   */
+  verifiedRecovery: Schema.Literal(false),
+  note: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderQuotaResetRequestResult = typeof ProviderQuotaResetRequestResult.Type;
 
 /** A point-in-time view of one provider's limits, built for the /usage-limits panel. */
 export const UsageLimitsReport = Schema.Struct({

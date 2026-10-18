@@ -102,4 +102,64 @@ describe("ResetCreditCoordinator", () => {
       assert.strictEqual(yield* Ref.get(peak), 2);
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
+
+  it.effect("a stable key makes every replay of one intent the same redemption", () =>
+    Effect.gen(function* () {
+      const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+      const keys = yield* Ref.make<ReadonlyArray<string>>([]);
+      const consume = (key: string) =>
+        Ref.update(keys, (seen) => [...seen, key]).pipe(Effect.as("reset" as const));
+
+      // Two settled successes in a row still re-send the caller's key: the
+      // provider, not the coordinator, deduplicates replays of the intent.
+      yield* redeem("acct", consume, undefined, "approved-card-key");
+      yield* redeem("acct", consume, undefined, "approved-card-key");
+      // A different intent carries a different key, and a keyless caller is
+      // unaffected by stable-key calls sharing the account.
+      yield* redeem("acct", consume, undefined, "other-card-key");
+      yield* redeem("acct", consume);
+
+      const seen = yield* Ref.get(keys);
+      assert.strictEqual(seen.length, 4);
+      assert.strictEqual(seen[0], "approved-card-key");
+      assert.strictEqual(seen[1], "approved-card-key");
+      assert.strictEqual(seen[2], "other-card-key");
+      assert.notStrictEqual(seen[3], "approved-card-key");
+      assert.notStrictEqual(seen[3], "other-card-key");
+    }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
+  );
+
+  it.effect(
+    "a stable-key replay queued behind an in-flight redemption does not mint a new key",
+    () =>
+      Effect.gen(function* () {
+        const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+        const release = yield* Deferred.make<void>();
+        const keys = yield* Ref.make<ReadonlyArray<string>>([]);
+        const consume = (key: string) =>
+          Ref.update(keys, (seen) => [...seen, key]).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as("reset" as const),
+          );
+
+        // A duplicate authorization arrives while the first redemption holds
+        // the account lock; it must queue onto the same key, not run a second
+        // operation after the first settles.
+        const first = yield* redeem("acct", consume, undefined, "approved-card-key").pipe(
+          Effect.forkChild,
+        );
+        const duplicate = yield* redeem("acct", consume, undefined, "approved-card-key").pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(duplicate);
+
+        const seen = yield* Ref.get(keys);
+        assert.strictEqual(seen.length, 2);
+        assert.strictEqual(seen[0], "approved-card-key");
+        assert.strictEqual(seen[1], "approved-card-key");
+      }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
+  );
 });

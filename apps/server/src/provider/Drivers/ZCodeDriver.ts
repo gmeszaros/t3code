@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Account bindings use a non-secret SHA-256 digest.
+import * as NodeCrypto from "node:crypto";
 import { ProviderDriverKind, ZCodeSettings } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -8,7 +10,11 @@ import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient, Headers } from "effect/http";
-import { readZCodeUsageLimits, consumeZCodeResetCredit } from "../zcode/ZCodeUsageLimits.ts";
+import {
+  readZCodeUsageLimits,
+  consumeZCodeResetCredit,
+  ZCodeResetError,
+} from "../zcode/ZCodeUsageLimits.ts";
 
 import { readZCodeAccountProfile } from "../zcode/ZCodeNativeAccount.ts";
 import { resolveZCodeEnvironmentPaths } from "../zcode/ZCodeEnvironmentPaths.ts";
@@ -44,6 +50,8 @@ const decodeZCodeSettings = Schema.decodeSync(ZCodeSettings);
 type ZCodeSettingsType = Schema.Schema.Type<typeof ZCodeSettings>;
 
 const DRIVER_KIND = ProviderDriverKind.make("zcode");
+const isZCodeResetError = Schema.is(ZCodeResetError);
+const isProviderDriverError = Schema.is(ProviderDriverError);
 
 // The official runtime updates through the ZCode app itself, so T3 never
 // offers a one-click update for it.
@@ -65,6 +73,143 @@ export type ZCodeDriverEnv =
   | ServerConfig
   | ResetCreditCoordinator.ResetCreditCoordinator;
 
+export const makeZCodeResetCreditConsumer = Effect.fn("makeZCodeResetCreditConsumer")(function* <
+  E,
+>(input: {
+  readonly instanceId: import("@t3tools/contracts").ProviderInstanceId;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly refreshUsage: Effect.Effect<unknown, E>;
+}) {
+  const resetCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+  const httpClient = yield* HttpClient.HttpClient;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const accountIdentity = (credentialsPath: string, profileId: string) =>
+    NodeCrypto.createHash("sha256")
+      .update(JSON.stringify([credentialsPath, profileId]))
+      .digest("hex");
+  const resetCreditAccountIdentity = Effect.gen(function* () {
+    const profile = yield* readZCodeAccountProfile(input.environment);
+    const { credentialsPath } = yield* resolveZCodeEnvironmentPaths(input.environment);
+    if (!profile?.profileId)
+      return yield* new ProviderDriverError({
+        driver: DRIVER_KIND,
+        instanceId: input.instanceId,
+        detail: "ZCode account unavailable.",
+        redemption: "refused",
+      });
+    return accountIdentity(credentialsPath, profile.profileId);
+  }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+    Effect.mapError(
+      () =>
+        new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId: input.instanceId,
+          detail: "ZCode account unavailable.",
+          redemption: "refused",
+        }),
+    ),
+  );
+  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (
+    resetWindowId,
+    options,
+  ) =>
+    Effect.gen(function* () {
+      if (resetWindowId === undefined)
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId: input.instanceId,
+          detail: "Choose a ZCode reset window.",
+          redemption: "refused",
+        });
+      const profile = yield* readZCodeAccountProfile(input.environment);
+      const profileId = profile?.profileId;
+      if (!profileId)
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId: input.instanceId,
+          detail: "ZCode account unavailable.",
+          redemption: "refused",
+        });
+      const { credentialsPath } = yield* resolveZCodeEnvironmentPaths(input.environment);
+      if (
+        options?.expectedAccountIdentity !== undefined &&
+        options.expectedAccountIdentity !== accountIdentity(credentialsPath, profileId)
+      )
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId: input.instanceId,
+          detail: "ZCode account changed after reset approval. Request a new approval.",
+          redemption: "refused",
+        });
+      const outcome = yield* resetCoordinator
+        .redeem(
+          `zcode:${credentialsPath}:${profileId}:${resetWindowId}`,
+          (idempotencyKey) =>
+            consumeZCodeResetCredit({
+              environment: input.environment,
+              resetWindowId,
+              idempotencyKey,
+              profileId,
+            }),
+          undefined,
+          options?.idempotencyKey,
+        )
+        .pipe(
+          Effect.timeout("20 seconds"),
+          Effect.catch((cause) =>
+            // A `ZCodeResetError` is the provider answering and refusing, so
+            // the reset was not applied. Anything else — transport, timeout,
+            // decode — leaves the outcome unknown and must never be reported
+            // as a non-redemption, because the provider may have consumed
+            // the credit. The cause is dropped either way: HTTP errors can
+            // carry credential material.
+            Effect.fail(
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId: input.instanceId,
+                detail: isZCodeResetError(cause)
+                  ? cause.detail
+                  : "ZCode could not confirm the reset. Refresh usage and retry the same window.",
+                redemption: isZCodeResetError(cause) ? "refused" : "unconfirmed",
+              }),
+            ),
+          ),
+        );
+      // The outcome is confirmed at this point, so a failed usage refresh
+      // must not turn a redeemed reset into an uncertain one.
+      yield* input.refreshUsage.pipe(Effect.timeout("5 seconds"), Effect.ignore);
+      return outcome;
+    }).pipe(
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(Headers.CurrentRedactedNames, [
+        "authorization",
+        "x-bigmodel-authorization",
+      ]),
+      // A timeout here interrupts a POST that may still have landed, so it
+      // is uncertain, never a refusal; classified refusals pass through.
+      Effect.catch((error) =>
+        isProviderDriverError(error)
+          ? Effect.fail(error)
+          : Effect.fail(
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId: input.instanceId,
+                detail:
+                  "ZCode could not confirm the reset. Refresh usage and retry the same window.",
+                redemption: "unconfirmed",
+              }),
+            ),
+      ),
+    );
+
+  return Object.assign(consumeResetCredit, { accountIdentity: resetCreditAccountIdentity });
+});
+
 export const ZCodeDriver: ProviderDriver<ZCodeSettingsType, ZCodeDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
@@ -76,13 +221,11 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettingsType, ZCodeDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
-      const resetCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
       const httpClient = yield* HttpClient.HttpClient;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const { cwd, attachmentsDir } = yield* ServerConfig;
-      const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+      const { attachmentsDir } = yield* ServerConfig;
       const processEnv = yield* mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -166,59 +309,11 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettingsType, ZCodeDriverEnv> = {
         ),
       );
 
-      const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (
-        resetWindowId,
-      ) =>
-        Effect.gen(function* () {
-          if (resetWindowId === undefined)
-            return yield* new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Choose a ZCode reset window.",
-            });
-          const profile = yield* readZCodeAccountProfile(processEnv);
-          const profileId = profile?.profileId;
-          if (!profileId)
-            return yield* new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "ZCode account unavailable.",
-            });
-          const { credentialsPath } = yield* resolveZCodeEnvironmentPaths(processEnv);
-          const outcome = yield* resetCoordinator.redeem(
-            `zcode:${credentialsPath}:${profileId}:${resetWindowId}`,
-            (idempotencyKey) =>
-              consumeZCodeResetCredit({
-                environment: processEnv,
-                resetWindowId,
-                idempotencyKey,
-                profileId,
-              }),
-          );
-          yield* snapshot.refresh;
-          return outcome;
-        }).pipe(
-          Effect.timeout("20 seconds"),
-          Effect.provideService(HttpClient.HttpClient, httpClient),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(Headers.CurrentRedactedNames, [
-            "authorization",
-            "x-bigmodel-authorization",
-          ]),
-          Effect.mapError(
-            () =>
-              new ProviderDriverError({
-                driver: DRIVER_KIND,
-                instanceId,
-                detail:
-                  "ZCode could not confirm the reset. Refresh usage and retry the same window.",
-              }),
-          ),
-        );
-
-      void cwd;
-      void eventLoggers;
+      const consumeResetCredit = yield* makeZCodeResetCreditConsumer({
+        instanceId,
+        environment: processEnv,
+        refreshUsage: snapshot.refresh,
+      });
 
       return {
         instanceId,
@@ -231,6 +326,7 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettingsType, ZCodeDriverEnv> = {
         orchestrationAdapter: adapter,
         textGeneration,
         consumeResetCredit,
+        resetCreditAccountIdentity: consumeResetCredit.accountIdentity,
       } satisfies ProviderInstance;
     }),
 };

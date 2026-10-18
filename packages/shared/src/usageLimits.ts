@@ -203,7 +203,10 @@ export interface LimitAccount {
 export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
+  const windowSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
+  const knowsWindowInventory = (limits: LimitAccount["limits"]) =>
+    limits.resetCreditWindows?.some((window) => window.availableCount !== null) ?? false;
   const merge = (key: string, next: LimitAccount) => {
     // Redeeming through a hub also clears the routing cooldown that hub holds
     // for the account. Redeeming natively against the same subscription resets
@@ -226,6 +229,18 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     ) {
       creditSources.set(key, next);
     }
+    // Per-window reset inventory stands on its own: a read that failed or came
+    // back all-unknown must not erase the last read that knew the counts, and
+    // that known read is also where the inventory can be redeemed.
+    if (knowsWindowInventory(next.limits)) {
+      const previousWindowSource = windowSources.get(key);
+      if (
+        !previousWindowSource ||
+        Date.parse(next.limits.checkedAt) > Date.parse(previousWindowSource.limits.checkedAt)
+      ) {
+        windowSources.set(key, next);
+      }
+    }
     const previous = accounts.get(key);
     if (!previous) {
       accounts.set(key, next);
@@ -244,6 +259,9 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     // Credits and their redemption target travel together. A failed credit
     // probe must not erase a successful read from another environment.
     const creditSource = creditSources.get(key);
+    const windowSource = knowsWindowInventory(winner.limits)
+      ? winner
+      : (windowSources.get(key) ?? winner);
     accounts.set(key, {
       ...previous,
       displayName: previous.displayName ?? next.displayName,
@@ -254,12 +272,25 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
       redeem:
         hubRedeems.get(key)?.redeem ??
-        (creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem)),
+        (creditSource
+          ? creditSource.redeem
+          : (windowSource.redeem ?? winner.redeem ?? previous.redeem ?? next.redeem)),
       limits: {
         ...winner.limits,
         ...(creditSource?.limits.resetCredits
           ? { resetCredits: creditSource.limits.resetCredits }
           : { resetCredits: undefined }),
+        // The last known window inventory stays visible, and stays anchored to
+        // the environment that can redeem it, until a read with known counts
+        // replaces it. A zero a provider just reported is known, so it wins.
+        // The unreadable marker only travels with the all-unknown read it
+        // describes; stale-but-known counts stand on their own.
+        ...(windowSource === winner
+          ? {}
+          : {
+              resetCreditWindows: windowSource.limits.resetCreditWindows,
+              resetCreditWindowsUnavailable: undefined,
+            }),
       },
     });
   };

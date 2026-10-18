@@ -78,14 +78,21 @@ function restartContinuationBlocked(
   if (waitingRequest) return true;
   return projection.turnItems.some(
     (item) =>
-      item.type === "secret_request" &&
-      item.runId === source.id &&
-      (item.secretStatus === "pending" ||
-        // Recovery cancels an open secret card and its run at the same instant.
-        (item.secretStatus === "cancelled" &&
-          item.completedAt !== null &&
-          source.completedAt !== null &&
-          DateTime.Equivalence(item.completedAt, source.completedAt))),
+      ((item.type === "secret_request" &&
+        (item.secretStatus === "pending" ||
+          // Recovery cancels an open secret card and its run at the same instant.
+          (item.secretStatus === "cancelled" &&
+            item.completedAt !== null &&
+            source.completedAt !== null &&
+            DateTime.Equivalence(item.completedAt, source.completedAt)))) ||
+        (item.type === "reset_credit_request" &&
+          (item.requestStatus === "pending" ||
+            // Recovery cancels an open reset card and its run at the same instant.
+            (item.requestStatus === "cancelled" &&
+              item.completedAt !== null &&
+              source.completedAt !== null &&
+              DateTime.Equivalence(item.completedAt, source.completedAt))))) &&
+      item.runId === source.id,
   );
 }
 
@@ -204,7 +211,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const projection = yield* threads.getThreadRecords(
       input.threadId,
       ["messages", "runs", "providerTurns", "attempts", "runtimeRequests", "turnItems"],
-      { messageIds: [messageId], turnItemTypes: ["secret_request"] },
+      { messageIds: [messageId], turnItemTypes: ["secret_request", "reset_credit_request"] },
     );
     if (
       !resolveProjectSettings(enabled, projection.thread.projectId).settings

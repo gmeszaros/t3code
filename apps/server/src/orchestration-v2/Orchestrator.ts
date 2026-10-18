@@ -507,6 +507,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "reset_credit_request.record":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -7540,6 +7541,123 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  /**
+   * Records or updates the card for a quota reset an agent asked the user to
+   * approve, and later the redemption's outcome. The item carries the request
+   * and how it ended only; the redemption runs through the provider driver
+   * outside orchestration, after the user approves.
+   */
+  const dispatchResetCreditRequestRecord = Effect.fn(
+    "orchestrationV2.dispatch.resetCreditRequestRecord",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "reset_credit_request.record" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(
+        command.threadId,
+        ["runs", "nodes", "turnItems", "attempts", "providerTurns"],
+        { turnItemTypes: ["reset_credit_request"], messageRoles: [] },
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    if (run === undefined || run.rootNodeId !== command.nodeId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Node ${command.nodeId} is not the root of run ${command.runId}.`,
+      });
+    }
+    const existing = projection.turnItems.find((item) => item.id === command.turnItemId);
+    if (existing !== undefined && existing.type !== "reset_credit_request") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Turn item ${command.turnItemId} is not a reset credit request.`,
+      });
+    }
+    if (existing !== undefined && existing.runId !== command.runId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Reset credit request ${command.turnItemId} belongs to another run.`,
+      });
+    }
+    const now = yield* DateTime.now;
+    // A pending re-ask never changes an existing card, and an answered card
+    // is answered once. The one later update an approved card takes is its
+    // redemption outcome. A retry of the same approved intent may replace an
+    // outcome that does not yet say what happened (none or uncertain) with
+    // the provider's real answer; once an outcome names a settled result it
+    // is frozen, so a replay finds the card as it was left.
+    const pending = command.requestStatus === "pending";
+    const outcomeStillOpen = existing?.outcome === undefined || existing?.outcome === "unconfirmed";
+    const outcomeUpdate =
+      existing !== undefined &&
+      existing.requestStatus === "approved" &&
+      command.requestStatus === "approved" &&
+      command.outcome !== undefined &&
+      outcomeStillOpen;
+    const unchanged =
+      existing !== undefined &&
+      (pending || (existing.requestStatus !== "pending" && !outcomeUpdate));
+    const turnItem: OrchestrationV2TurnItem = unchanged
+      ? existing
+      : {
+          id: command.turnItemId,
+          threadId: command.threadId,
+          runId: command.runId,
+          nodeId: command.nodeId,
+          providerThreadId: run.providerThreadId,
+          providerTurnId: providerTurnForRun(projection, run)?.id ?? null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: existing?.ordinal ?? (yield* nextTurnItemOrdinal(projection)),
+          status: pending
+            ? "waiting"
+            : command.requestStatus === "approved"
+              ? "completed"
+              : "cancelled",
+          title: command.label,
+          startedAt: existing?.startedAt ?? now,
+          completedAt: pending ? null : now,
+          updatedAt: now,
+          type: "reset_credit_request",
+          label: command.label,
+          reason: command.reason,
+          providerInstanceId: command.providerInstanceId,
+          resetWindowId: command.resetWindowId,
+          ...((command.resetAccountIdentity ?? existing?.resetAccountIdentity)
+            ? {
+                resetAccountIdentity:
+                  command.resetAccountIdentity ?? existing?.resetAccountIdentity,
+              }
+            : {}),
+          requestStatus: command.requestStatus,
+          ...(command.outcome === undefined ? {} : { outcome: command.outcome }),
+          ...(command.warning === undefined ? {} : { warning: command.warning }),
+        };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: command.runId,
+      nodeId: command.nodeId,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: turnItem,
+    });
+  });
+
   const dispatchRuntimeRequestRespond = (
     command: Extract<OrchestrationV2Command, { readonly type: "runtime-request.respond" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -11258,6 +11376,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
+        break;
+      case "reset_credit_request.record":
+        yield* dispatchResetCreditRequestRecord(command, events);
         break;
       default:
         return yield* dispatchUnsupported(command);

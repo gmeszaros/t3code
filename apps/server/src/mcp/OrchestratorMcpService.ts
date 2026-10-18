@@ -854,6 +854,10 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return `Created thread ${item.targetThreadId} with ${item.targetProviderInstanceId} (${item.targetModel}).`;
     case "secret_request":
       return `Asked the user for ${item.label}: ${item.secretStatus}.`;
+    case "reset_credit_request":
+      return `${item.label}: ${item.requestStatus}${
+        item.outcome === undefined ? "" : ` (${item.outcome})`
+      }.`;
     case "subagent":
       return item.result ?? item.progress ?? item.prompt;
     case "dynamic_tool":

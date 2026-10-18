@@ -1,9 +1,12 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The test encrypts fixtures with the same node AES-GCM ciphers the reader consumes.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import { DateTime, Effect, FileSystem, Path, Schema } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientResponse, HttpClientError } from "effect/http";
 import {
   decryptZCodeCredential,
   consumeZCodeResetCredit,
@@ -11,6 +14,9 @@ import {
   zcodeQuotaWindows,
   zcodeResetWindows,
 } from "./ZCodeUsageLimits.ts";
+import { makeZCodeResetCreditConsumer } from "../Drivers/ZCodeDriver.ts";
+import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { readZCodeAccountProfile } from "./ZCodeNativeAccount.ts";
 
 const secret = "synthetic-native-cipher-secret";
@@ -29,15 +35,19 @@ function encrypt(value: string): string {
   return `enc:v1:${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${body.toString("base64url")}`;
 }
 
-it.live.each([
-  ["five_hour", 200, 0, "fixture-user", true],
-  ["weekly", 200, 0, "fixture-user", true],
-  ["weekly", 403, 0, "fixture-user", false],
-  ["five_hour", 200, 12, "fixture-user", false],
-  ["five_hour", 200, 0, "other-user", false],
+it.effect.each([
+  ["five_hour", 200, 0, "fixture-user", true, "normal"],
+  ["five_hour", 200, 0, "fixture-user", true, "lost"],
+  ["five_hour", 200, 0, "fixture-user", true, "timeout"],
+  ["five_hour", 200, 0, "other-user", false, "normal"],
+  ["five_hour", 200, 0, "fixture-user", true, "refresh-failed"],
+  ["five_hour", 200, 0, "fixture-user", false, "account-changed"],
+  ["weekly", 200, 0, "fixture-user", true, "normal"],
+  ["weekly", 403, 0, "fixture-user", false, "normal"],
+  ["five_hour", 200, 12, "fixture-user", false, "normal"],
 ] as const)(
   "uses only the confirmed native reset window: %s/%s/%s/%s",
-  ([resetWindowId, status, code, profileId, succeeds]) =>
+  ([resetWindowId, status, code, profileId, succeeds, mode]) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const home = yield* fs.makeTempDirectoryScoped({ prefix: "zcode-reset-fixture-" });
@@ -71,8 +81,10 @@ it.live.each([
         email: "person@example.test",
       });
       let calls = 0;
+      const redeemed = new Set<string>();
+      const postStarted = yield* Deferred.make<void>();
       const client = HttpClient.make((request) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           calls++;
           expect(request.method).toBe("POST");
           expect(request.url).toBe("https://zcode.z.ai/api/v1/coding-plan/reset/use");
@@ -85,21 +97,85 @@ it.live.each([
               idempotency_key: "stable-reset-key",
               reset_type: resetWindowId === "weekly" ? "WEEK" : "FIVE_HOUR",
             });
+          if (status === 200 && code === 0) redeemed.add("stable-reset-key");
+          if (mode === "timeout" && calls === 1) {
+            yield* Deferred.succeed(postStarted, undefined);
+            return yield* Effect.never;
+          }
+          if (mode === "lost" && calls === 1)
+            return yield* new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({
+                request,
+                cause: "synthetic credential-bearing failure",
+              }),
+            });
           return HttpClientResponse.fromWeb(
             request,
-            Response.json({ code, data: { used: true } }, { status }),
+            Response.json(code === 0 ? { code, data: { used: true } } : { code }, { status }),
           );
         }),
       );
-      const result = yield* consumeZCodeResetCredit({
-        environment,
-        resetWindowId,
-        idempotencyKey: "stable-reset-key",
-        profileId,
-      }).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.result);
-      expect(result._tag).toBe(succeeds ? "Success" : "Failure");
-      expect(calls).toBe(profileId === "fixture-user" ? 1 : 0);
+      if (profileId !== "fixture-user") {
+        const refused = yield* consumeZCodeResetCredit({
+          environment,
+          resetWindowId,
+          idempotencyKey: "stable-reset-key",
+          profileId,
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.result);
+        expect(refused._tag).toBe("Failure");
+        expect(calls).toBe(0);
+        return;
+      }
+      const result = yield* Effect.gen(function* () {
+        // This is the consumer installed on the real driver, including account
+        // coordinator, native credentials, network decoding and refresh boundary.
+        const consume = yield* makeZCodeResetCreditConsumer({
+          instanceId: ProviderInstanceId.make("zcode"),
+          environment,
+          refreshUsage:
+            mode === "refresh-failed" ? Effect.fail("synthetic refresh failure") : Effect.void,
+        });
+        const expectedAccountIdentity = yield* consume.accountIdentity;
+        expect(expectedAccountIdentity).toMatch(/^[a-f0-9]{64}$/);
+        expect(expectedAccountIdentity).not.toContain("fixture-user");
+        if (mode === "account-changed") {
+          const stored = JSON.parse(yield* fs.readFileString(`${root}/credentials.json`));
+          stored["oauth:zai:user_info"] = encrypt(JSON.stringify({ user_id: "changed-user" }));
+          yield* fs.writeFileString(`${root}/credentials.json`, JSON.stringify(stored));
+        }
+        const attempt = consume(resetWindowId, {
+          idempotencyKey: "stable-reset-key",
+          expectedAccountIdentity,
+        }).pipe(Effect.result);
+        const first = yield* mode === "timeout"
+          ? Effect.gen(function* () {
+              const fiber = yield* Effect.forkChild(attempt);
+              yield* Deferred.await(postStarted);
+              yield* TestClock.adjust("20 seconds");
+              return yield* Fiber.join(fiber);
+            })
+          : attempt;
+        if (mode === "lost" || mode === "timeout") {
+          expect(first._tag).toBe("Failure");
+          if (first._tag === "Failure") {
+            expect(first.failure.redemption).toBe("unconfirmed");
+            expect(JSON.stringify(first.failure)).not.toContain("credential-bearing");
+          }
+          expect(calls).toBe(1);
+        }
+        return first;
+      }).pipe(
+        Effect.provide(ResetCreditCoordinator.layerTest),
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      expect(result._tag).toBe(
+        mode === "lost" || mode === "timeout" ? "Failure" : succeeds ? "Success" : "Failure",
+      );
+      if (mode !== "lost" && mode !== "timeout")
+        expect(calls).toBe(profileId === "fixture-user" && mode !== "account-changed" ? 1 : 0);
       if (result._tag === "Success") expect(result.success).toBe("reset");
+      if (result._tag === "Failure" && code !== 0)
+        expect(result.failure.redemption).toBe("refused");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -335,10 +411,104 @@ it.live.each([200, 403])(
       expect(limits.resetCreditWindows?.map((window) => window.availableCount)).toEqual(
         resetStatus === 200 ? [1, 0] : [null, null],
       );
+      if (resetStatus === 200) {
+        expect(limits.resetCreditWindowsUnavailable).toBeUndefined();
+      } else {
+        // An HTTP refusal is bounded fixed text; the raw response and its
+        // error text never reach the snapshot.
+        expect(limits.resetCreditWindowsUnavailable).toEqual({
+          reason: "probeFailed",
+          message: "Banked resets could not be read.",
+        });
+      }
       expect(yield* fs.readFileString(`${home}/.zcode/v2/credentials.json`)).toBe(
         yield* encodeStore(store),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("marks banked resets unreadable without the native sign-in, not as a failed probe", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "zcode-limits-test-" });
+    yield* fs.makeDirectory(`${home}/.zcode/v2`, { recursive: true });
+    yield* fs.writeFileString(
+      `${home}/.zcode/v2/provider_config.json`,
+      '{"config":{"defaultModelSelection":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"}}}',
+    );
+    yield* fs.writeFileString(
+      `${home}/.zcode/v2/credentials.json`,
+      yield* encodeStore({
+        [`account-provider:${providerId}:identity`]: encrypt("synthetic-account"),
+        [`account-provider:coding-plan:${providerId}:account:synthetic-account:api-key`]:
+          encrypt("synthetic-api-token"),
+      }),
+    );
+    const calls: string[] = [];
+    const client = HttpClient.make((request) =>
+      Effect.sync(() => {
+        calls.push(request.url);
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ code: 200, data: { limits: [] } }),
+        );
+      }),
+    );
+    const limits = yield* readZCodeUsageLimits({
+      enabled: true,
+      environment: { HOME: home, ZCODE_CREDENTIAL_SECRET: secret },
+    }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+    // No native sign-in, so only the quota endpoint is probed and the reset
+    // inventory is reported as invisible to this environment.
+    expect(calls).toEqual(["https://api.z.ai/api/monitor/usage/quota/limit"]);
+    expect(limits.resetCreditWindowsUnavailable?.reason).toBe("notSignedIn");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("reports a provider business refusal for banked resets as a bounded probe failure", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "zcode-limits-test-" });
+    yield* fs.makeDirectory(`${home}/.zcode/v2`, { recursive: true });
+    yield* fs.writeFileString(
+      `${home}/.zcode/v2/provider_config.json`,
+      '{"config":{"defaultModelSelection":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"}}}',
+    );
+    yield* fs.writeFileString(
+      `${home}/.zcode/v2/credentials.json`,
+      yield* encodeStore({
+        [`account-provider:${providerId}:identity`]: encrypt("synthetic-account"),
+        [`account-provider:coding-plan:${providerId}:account:synthetic-account:api-key`]:
+          encrypt("synthetic-api-token"),
+        "oauth:active_provider": encrypt("zai"),
+        "oauth:zai:access_token": encrypt("synthetic-account-token"),
+        zcodejwttoken: encrypt("synthetic-zcode-token"),
+      }),
+    );
+    const client = HttpClient.make((request) =>
+      Effect.sync(() => {
+        if (request.url === "https://api.z.ai/api/monitor/usage/quota/limit") {
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ code: 200, data: { limits: [] } }),
+          );
+        }
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ code: 3101, detail: "internal stack evidence" }, { status: 200 }),
+        );
+      }),
+    );
+    const limits = yield* readZCodeUsageLimits({
+      enabled: true,
+      environment: { HOME: home, ZCODE_CREDENTIAL_SECRET: secret },
+    }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+    expect(limits.resetCreditWindows?.map((window) => window.availableCount)).toEqual([null, null]);
+    expect(limits.resetCreditWindowsUnavailable).toEqual({
+      reason: "probeFailed",
+      message: "The provider refused to report banked resets.",
+    });
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each(["{invalid-json", "enc:v1:invalid", ""])(

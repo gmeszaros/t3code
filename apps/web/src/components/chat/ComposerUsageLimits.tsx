@@ -86,6 +86,23 @@ function UsageLimitsBannerBody({
           const resetCreditInput =
             account.resetCreditInput ??
             (account.instanceId ? { instanceId: account.instanceId } : undefined);
+          const instanceInput =
+            resetCreditInput && "instanceId" in resetCreditInput ? resetCreditInput : undefined;
+          // Window-scoped inventory redeems per window, naming the window, on
+          // the instance that reported it; hub-held credits keep the generic
+          // redeem below.
+          const windowCredits = (account.limits.resetCreditWindows ?? []).filter(
+            (
+              credit,
+            ): credit is typeof credit & {
+              readonly id: "five_hour" | "weekly";
+              readonly availableCount: number;
+            } =>
+              (credit.id === "five_hour" || credit.id === "weekly") &&
+              credit.canRedeem === true &&
+              typeof credit.availableCount === "number" &&
+              credit.availableCount > 0,
+          );
           const notice = limitsNotice(account.limits);
           const externalUsage = account.limits.externalUsage;
           return (
@@ -115,8 +132,33 @@ function UsageLimitsBannerBody({
                   Manage usage
                 </Button>
               ) : null}
-              <ResetCreditWindows windows={account.limits.resetCreditWindows} now={now} />
-              {resetCreditInput && account.limits.resetCredits ? (
+              <ResetCreditWindows
+                windows={account.limits.resetCreditWindows}
+                unavailable={account.limits.resetCreditWindowsUnavailable}
+                now={now}
+              />
+              {instanceInput && windowCredits.length > 0 ? (
+                windowCredits.map((credit) => (
+                  <ResetCredits
+                    key={credit.id}
+                    environmentId={environmentId}
+                    input={{
+                      instanceId: instanceInput.instanceId,
+                      resetWindowId: credit.id === "five_hour" ? "five_hour" : "weekly",
+                    }}
+                    credits={{
+                      availableCount: credit.availableCount,
+                      nextExpiresAt: credit.nextExpiresAt,
+                    }}
+                    now={now}
+                    windowLabel={
+                      credit.id === "five_hour"
+                        ? "the 5-hour quota window"
+                        : "the weekly quota window"
+                    }
+                  />
+                ))
+              ) : resetCreditInput && account.limits.resetCredits ? (
                 <ResetCredits
                   environmentId={environmentId}
                   input={resetCreditInput}

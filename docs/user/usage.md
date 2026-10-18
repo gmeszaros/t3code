@@ -92,6 +92,13 @@ Claude resets are not available when the server runs on macOS, where Claude keep
 Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
+Agents running on the native Z.AI Coding Plan can request a quota reset in their thread.
+Each reset requires your explicit approval in web or desktop and spends a banked reset credit.
+Existing mobile clients cannot approve these request cards; use web or desktop for that decision.
+Provider acceptance does not confirm that model execution has recovered. If redemption is uncertain,
+the request will not redeem again, including after a server restart. Check the account before
+approving another reset.
+
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
 Filter with the environment dropdown to see what a single machine has.
 
