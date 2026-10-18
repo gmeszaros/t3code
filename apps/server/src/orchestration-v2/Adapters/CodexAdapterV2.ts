@@ -4346,10 +4346,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.orDie),
         );
 
-        yield* client.handleServerNotification("account/rateLimits/updated", (payload) =>
+        const applyRateLimits = (snapshot: CodexRateLimitSnapshot) =>
           Effect.gen(function* () {
             yield* Ref.update(rateLimitSnapshot, (previous) =>
-              mergeCodexRateLimits(previous, payload.rateLimits),
+              mergeCodexRateLimits(previous, snapshot),
             );
             const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
             for (const item of (yield* Ref.get(limitedTurnItems)).values()) {
@@ -4369,12 +4369,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 turnItem: updated,
               });
             }
-            const update = codexRateLimitsToUpdate(payload.rateLimits);
+            const update = codexRateLimitsToUpdate(snapshot);
             if (update && adapterOptions.onUsageLimits) {
               const checkedAt = DateTime.formatIso(yield* DateTime.now);
               yield* adapterOptions.onUsageLimits({ ...update, checkedAt });
             }
-          }).pipe(Effect.orDie),
+          });
+        yield* client.handleServerNotification("account/rateLimits/updated", (payload) =>
+          applyRateLimits(payload.rateLimits).pipe(Effect.orDie),
         );
 
         yield* client.handleServerNotification("thread/tokenUsage/updated", (payload) =>
@@ -5633,6 +5635,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* Ref.update(limitedTurnItems, (items) =>
               new Map(items).set(context.providerThread.id, item),
             );
+            if (current.failure.resetAt == null) {
+              // A cold session can hit its limit before any rolling usage notification.
+              // Fork so the notification reader remains free to receive the RPC response.
+              yield* client.request("account/rateLimits/read", null).pipe(
+                Effect.flatMap((response) =>
+                  applyRateLimits(response.rateLimitsByLimitId?.codex ?? response.rateLimits),
+                ),
+                Effect.timeoutOption("2 seconds"),
+                Effect.catch(() => Effect.void),
+                Effect.forkIn(scope),
+              );
+            }
           }
         });
 
