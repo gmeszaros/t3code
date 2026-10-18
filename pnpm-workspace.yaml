@@ -198,6 +198,10 @@ overrides:
   "seroval@>=0.12.0 <=1.6.2": 1.6.3
   "proxy-addr@>=1.1.0 <2.0.8": 2.0.8
   "@modelcontextprotocol/sdk@>=1.12.0 <1.31.0": 1.31.0
+  # @vercel/routing-utils and @vercel/config both pin path-to-regexp 6.1.0
+  # exactly, so the ReDoS fix (GHSA-9wv6-86v2-598j) can only land through an
+  # override scoped to the advisory's range.
+  "path-to-regexp@>=4.0.0 <6.3.0": 6.3.0
   # Keep jsdom's optional peer consistent so Vite+ has one test-runner instance.
   "@exodus/bytes>@noble/hashes": "1.8.0"
   # Earlier React Navigation declarations create a circular type alias in TypeScript 7.
