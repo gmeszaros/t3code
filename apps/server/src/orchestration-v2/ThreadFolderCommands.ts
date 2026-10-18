@@ -162,10 +162,7 @@ export interface ThreadFolderCommandState {
 const isFolderTitle = Schema.is(ThreadFolderTitle);
 
 /** Depth of one folder from its roots; a corrupt cycle counts what is walkable. */
-export function threadFolderDepth(
-  folders: ReadonlyArray<ThreadFolder>,
-  folderId: ThreadFolderId,
-): number {
+function threadFolderDepth(folders: ReadonlyArray<ThreadFolder>, folderId: ThreadFolderId): number {
   const byId = new Map(folders.map((folder) => [folder.id, folder]));
   let depth = 1;
   let current = byId.get(folderId);
