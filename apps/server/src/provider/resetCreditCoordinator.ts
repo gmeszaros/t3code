@@ -31,11 +31,18 @@ export class ResetCreditCoordinator extends Context.Service<
      * `isSettled` says a failure was a final answer (such as a cooldown).
      * Any other failure (timeout included) keeps it so the next attempt is
      * the same attempt.
+     *
+     * `stableKey` replaces the minted key with a caller-chosen one, for a
+     * redemption whose intent is already pinned durably elsewhere (an
+     * approval card): every replay of that intent re-sends the same key, so
+     * callers must not infer deduplication from the key alone. Callers must
+     * enforce their own replay and restart policy; retention is undocumented.
      */
     readonly redeem: <E, R>(
       accountKey: string,
       consume: (idempotencyKey: string) => Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
       isSettled?: (error: E) => boolean,
+      stableKey?: string,
     ) => Effect.Effect<ProviderConsumeResetCreditOutcome, E | PlatformError.PlatformError, R>;
   }
 >()("t3/provider/resetCreditCoordinator") {}
@@ -63,20 +70,27 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const redeem: ResetCreditCoordinator["Service"]["redeem"] = (accountKey, consume, isSettled) =>
+  const redeem: ResetCreditCoordinator["Service"]["redeem"] = (
+    accountKey,
+    consume,
+    isSettled,
+    stableKey,
+  ) =>
     Effect.gen(function* () {
       const state = yield* stateFor(accountKey);
       return yield* state.lock.withPermits(1)(
         Effect.gen(function* () {
           const existing = yield* Ref.get(state.pendingKey);
-          const idempotencyKey = existing ?? (yield* crypto.randomUUIDv4());
-          yield* Ref.set(state.pendingKey, idempotencyKey);
+          const idempotencyKey = stableKey ?? existing ?? (yield* crypto.randomUUIDv4());
+          if (stableKey === undefined) yield* Ref.set(state.pendingKey, idempotencyKey);
           const outcome = yield* consume(idempotencyKey).pipe(
             Effect.tapError((error) =>
-              isSettled?.(error) ? Ref.set(state.pendingKey, null) : Effect.void,
+              stableKey === undefined && (isSettled?.(error) ?? false)
+                ? Ref.set(state.pendingKey, null)
+                : Effect.void,
             ),
           );
-          yield* Ref.set(state.pendingKey, null);
+          if (stableKey === undefined) yield* Ref.set(state.pendingKey, null);
           return outcome;
         }),
       );

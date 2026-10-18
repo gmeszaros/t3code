@@ -46,6 +46,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ProviderEventIngestor from "./orchestration-v2/ProviderEventIngestor.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ResetCreditCoordinator from "./provider/resetCreditCoordinator.ts";
+import * as ResetCreditRequests from "./provider/ResetCreditRequests.ts";
 import * as EventNdjsonLogger from "./provider/EventNdjsonLogger.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -500,6 +501,13 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
 const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
   Layer.provideMerge(layerCheckpointStore),
   Layer.provideMerge(layerOrchestrationV2Runtime),
+  // Agent-requested quota resets read the same runtime the MCP toolkit
+  // dispatches through; both transports share one service instance.
+  Layer.provideMerge(
+    ResetCreditRequests.layer.pipe(
+      Layer.provide(Layer.mergeAll(layerOrchestrationV2Runtime, RuntimeLayer.layerEventSink)),
+    ),
+  ),
 );
 
 // Automatic thread settlement (#8600): a server-owned sweep evaluates

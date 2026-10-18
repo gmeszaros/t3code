@@ -40,6 +40,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import { ProviderToolkit } from "./toolkits/provider/tools.ts";
+import * as ProviderHandlers from "./toolkits/provider/handlers.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import * as ComputerTools from "./toolkits/computer/tools.ts";
 import * as DesktopComputerClient from "./DesktopComputerClient.ts";
@@ -818,6 +820,8 @@ export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorHandlers.layer,
 ).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
 
+const layerProviderToolkit = toolkitRegistration(ProviderToolkit, ProviderHandlers.layer);
+
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
 const layerWorktreeToolkitRegistration = toolkitRegistration(
@@ -943,6 +947,7 @@ export const layerComputerToolkit = imageToolRegistration(
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
+  layerProviderToolkit,
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,

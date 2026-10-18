@@ -580,6 +580,24 @@ describe("buildThreadFeed", () => {
     },
   );
 
+  it("omits the reset credit card without hiding adjacent conversation items", () => {
+    const reset: OrchestrationV2TurnItem = {
+      ...base("item-reset", "2026-06-20T00:00:02.500Z", 2),
+      type: "reset_credit_request",
+      label: "Quota reset approval",
+      reason: "The weekly window is exhausted; approve one reset to continue.",
+      providerInstanceId: ProviderInstanceId.make("provider-instance-1"),
+      resetWindowId: "weekly",
+      requestStatus: "pending",
+    };
+    const user = projected(userMessage(), 0);
+    const assistant = projected(assistantMessage(), 2);
+
+    expect(buildThreadFeed([user, projected(reset, 1), assistant])).toEqual(
+      buildThreadFeed([user, assistant]),
+    );
+  });
+
   it("hides synthetic workspace preparation activity", () => {
     const workspacePreparation = projected(
       {

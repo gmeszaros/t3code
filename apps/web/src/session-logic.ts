@@ -331,6 +331,7 @@ const STANDALONE_V2_ITEM_TYPES = new Set<OrchestrationV2ProjectedTurnItem["item"
   "handoff",
   "run_interrupt_request",
   "run_interrupt_result",
+  "reset_credit_request",
   "secret_request",
   "subagent",
 ]);

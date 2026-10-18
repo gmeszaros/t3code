@@ -177,6 +177,214 @@ describe("pools", () => {
     expect(pools[0]?.accounts[0]?.limits.resetCreditWindows).toEqual(resetCreditWindows);
     expect(collectLimitNotices(presentations)).toHaveLength(1);
   });
+
+  it("keeps the last known window inventory and its redemption source when a fresher read is unknown", () => {
+    const known = {
+      checkedAt: "2026-09-03T11:00:00.000Z",
+      windows: [{ ...weekly, usedPercent: 100 }],
+      resetCreditWindows: [
+        { id: "weekly", label: "Weekly resets", availableCount: 2, canRedeem: true },
+        { id: "five_hour", label: "5-hour resets", availableCount: null },
+      ],
+    };
+    const unknown = {
+      checkedAt: "2026-09-03T11:30:00.000Z",
+      windows: [{ ...weekly, usedPercent: 100 }],
+      resetCreditWindows: [
+        { id: "weekly", label: "Weekly resets", availableCount: null },
+        { id: "five_hour", label: "5-hour resets", availableCount: null },
+      ],
+    };
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          entry: { target: { label: "Laptop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: zcode,
+                instanceId: ProviderInstanceId.make("zcode-a"),
+                auth: { status: "authenticated", email: "same@example.com" },
+                usageLimits: known,
+              }),
+            ],
+          },
+        },
+      ],
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: zcode,
+                instanceId: ProviderInstanceId.make("zcode-b"),
+                auth: { status: "authenticated", email: "same@example.com" },
+                usageLimits: unknown,
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+    const [account] = collectLimitAccounts(input);
+    // The all-unknown read did not erase the counts the older environment read,
+    // and the inventory still redeems where it was read.
+    expect(
+      account?.limits.resetCreditWindows?.find((entry) => entry.id === "weekly"),
+    ).toMatchObject({ availableCount: 2, canRedeem: true });
+    expect(account?.redeem).toEqual({
+      environmentId: "env-a",
+      input: { instanceId: "zcode-a" },
+    });
+  });
+
+  it("keeps the unreadable-resets reason only with the all-unknown read it describes", () => {
+    const known = {
+      checkedAt: "2026-09-03T11:00:00.000Z",
+      windows: [{ ...weekly, usedPercent: 100 }],
+      resetCreditWindows: [
+        { id: "weekly", label: "Weekly resets", availableCount: 2, canRedeem: true },
+      ],
+    };
+    const unknown = {
+      checkedAt: "2026-09-03T11:30:00.000Z",
+      windows: [{ ...weekly, usedPercent: 100 }],
+      resetCreditWindows: [
+        { id: "weekly", label: "Weekly resets", availableCount: null },
+        { id: "five_hour", label: "5-hour resets", availableCount: null },
+      ],
+      resetCreditWindowsUnavailable: {
+        reason: "probeFailed" as const,
+        message: "Banked resets could not be read.",
+      },
+    };
+    const makeInput = (newer: typeof known | typeof unknown) =>
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          {
+            entry: { target: { label: "Laptop" } },
+            serverConfig: {
+              providers: [
+                provider({
+                  driver: zcode,
+                  instanceId: ProviderInstanceId.make("zcode-a"),
+                  auth: { status: "authenticated", email: "same@example.com" },
+                  usageLimits: known,
+                }),
+              ],
+            },
+          },
+        ],
+        [
+          EnvironmentId.make("env-b"),
+          {
+            entry: { target: { label: "Desktop" } },
+            serverConfig: {
+              providers: [
+                provider({
+                  driver: zcode,
+                  instanceId: ProviderInstanceId.make("zcode-b"),
+                  auth: { status: "authenticated", email: "same@example.com" },
+                  usageLimits: newer,
+                }),
+              ],
+            },
+          },
+        ],
+      ]);
+    // Known counts stay on their own: the newer failed read's reason does not
+    // attach to inventory it did not produce.
+    const [mergedKnown] = collectLimitAccounts(makeInput(unknown));
+    expect(mergedKnown?.limits.resetCreditWindowsUnavailable).toBeUndefined();
+    expect(mergedKnown?.limits.resetCreditWindows?.[0]).toMatchObject({ availableCount: 2 });
+
+    // With no known read behind it, the marker reaches the client with the
+    // unknown windows it explains.
+    const alone = new Map([
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: zcode,
+                instanceId: ProviderInstanceId.make("zcode-b"),
+                auth: { status: "authenticated", email: "same@example.com" },
+                usageLimits: unknown,
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+    const [mergedUnknown] = collectLimitAccounts(alone);
+    expect(mergedUnknown?.limits.resetCreditWindowsUnavailable).toEqual(
+      unknown.resetCreditWindowsUnavailable,
+    );
+  });
+
+  it("lets a fresh read with known zero counts replace older window inventory", () => {
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          entry: { target: { label: "Laptop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: zcode,
+                instanceId: ProviderInstanceId.make("zcode-a"),
+                auth: { status: "authenticated", email: "same@example.com" },
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:00:00.000Z",
+                  windows: [{ ...weekly, usedPercent: 100 }],
+                  resetCreditWindows: [
+                    { id: "weekly", label: "Weekly resets", availableCount: 2, canRedeem: true },
+                  ],
+                },
+              }),
+            ],
+          },
+        },
+      ],
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          serverConfig: {
+            providers: [
+              provider({
+                driver: zcode,
+                instanceId: ProviderInstanceId.make("zcode-b"),
+                auth: { status: "authenticated", email: "same@example.com" },
+                usageLimits: {
+                  checkedAt: "2026-09-03T11:30:00.000Z",
+                  windows: [{ ...weekly, usedPercent: 100 }],
+                  resetCreditWindows: [
+                    { id: "weekly", label: "Weekly resets", availableCount: 0, canRedeem: true },
+                  ],
+                },
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+    const [account] = collectLimitAccounts(input);
+    // A reported zero is a fact, not a failed read: the credits were spent.
+    expect(
+      account?.limits.resetCreditWindows?.find((entry) => entry.id === "weekly"),
+    ).toMatchObject({ availableCount: 0 });
+    expect(account?.redeem).toEqual({
+      environmentId: "env-b",
+      input: { instanceId: "zcode-b" },
+    });
+  });
   const checkedAt = "2026-09-03T11:00:00.000Z";
   const weekly = {
     id: "seven_day",
@@ -186,6 +394,7 @@ describe("pools", () => {
     resetsAt: "2026-09-06T12:00:00.000Z",
   } as const;
   const claude = ProviderDriverKind.make("claudeAgent");
+  const zcode = ProviderDriverKind.make("zcode");
   const source = {
     id: UsageLimitSourceId.make("hub"),
     kind: "cliproxy" as const,

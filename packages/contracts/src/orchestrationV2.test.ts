@@ -1,3 +1,8 @@
+import {
+  ForwardCompatibleUnionArray,
+  ForwardCompatibleUnion,
+  isUnknownUnionMember,
+} from "./baseSchemas.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -1567,4 +1572,51 @@ describe("latestProviderTurnForAttempt", () => {
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
   });
+});
+
+const members = OrchestrationV2TurnItem.members.filter(
+  (member) => member.fields.type.literal !== "reset_credit_request",
+);
+const legacyMembers = [members[0]!, ...members.slice(1)] as const;
+const legacyResetArray = Schema.decodeUnknownSync(
+  Schema.toCodecJson(ForwardCompatibleUnionArray(legacyMembers, "type")),
+);
+const legacyResetEventItem = Schema.decodeUnknownSync(
+  ForwardCompatibleUnion(legacyMembers, "type"),
+);
+const encodeResetCompatibilityItem = Schema.encodeSync(Schema.toCodecJson(OrchestrationV2TurnItem));
+
+// The official client contract before reset cards used these same union
+// decoders with this member set. Keep the regression independent of whether
+// the current client now knows the new card.
+it("pre-reset-card clients discard reset cards while preserving known items", () => {
+  const reset = {
+    type: "reset_credit_request",
+    id: "item-reset",
+    requestStatus: "approved",
+    outcome: "unconfirmed",
+  };
+  const known = decodeOrchestrationV2TurnItem({
+    id: "item-known",
+    type: "system_notice",
+    threadId: "thread-1",
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    status: "completed",
+    title: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: DateTime.makeUnsafe("2026-10-18T00:00:00.000Z"),
+    message: "Known notice",
+  });
+  expect(
+    legacyResetArray([reset, encodeResetCompatibilityItem(known)]).map((item) => item.id),
+  ).toEqual(["item-known"]);
+  const eventItem = legacyResetEventItem(reset);
+  expect(isUnknownUnionMember(eventItem)).toBe(true);
 });

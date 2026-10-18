@@ -208,7 +208,11 @@ function SegmentPopover({
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
       </div>
-      <ResetCreditWindows windows={account.limits.resetCreditWindows} now={now} />
+      <ResetCreditWindows
+        windows={account.limits.resetCreditWindows}
+        unavailable={account.limits.resetCreditWindowsUnavailable}
+        now={now}
+      />
       {credits && redeem ? (
         <div className="border-t border-border/60 pt-2.5 text-muted-foreground">
           <span className="flex items-center gap-3">
@@ -590,6 +594,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
         <ResetCreditWindows
           key={account.key}
           windows={account.limits.resetCreditWindows}
+          unavailable={account.limits.resetCreditWindowsUnavailable}
           now={now}
         />
       ))}

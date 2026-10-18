@@ -97,9 +97,16 @@ export interface ProviderInstance {
    * Redeem one banked rate-limit reset credit on the signed-in account, then
    * re-probe so the snapshot reflects the cleared windows. Account-level,
    * not thread-level, which is why it lives here rather than on the adapter.
+   * `options.idempotencyKey` pins the provider idempotency key to a durably
+   * approved intent. The key alone does not guarantee safe retries; callers
+   * must not replay an uncertain agent-approved redemption. Legacy UI callers
+   * without a key retain their existing account-coordinator behavior.
    */
+  /** Opaque account binding for a user-approved reset; never contains credentials. */
+  readonly resetCreditAccountIdentity?: Effect.Effect<string, ProviderDriverError>;
   readonly consumeResetCredit?: (
     resetWindowId?: "five_hour" | "weekly",
+    options?: { readonly idempotencyKey?: string; readonly expectedAccountIdentity?: string },
   ) => Effect.Effect<ProviderConsumeResetCreditOutcome, ProviderDriverError>;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;

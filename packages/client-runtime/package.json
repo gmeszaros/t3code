@@ -47,6 +47,10 @@
       "types": "./src/promptLinks.ts",
       "default": "./src/promptLinks.ts"
     },
+    "./reset-credit-request": {
+      "types": "./src/resetCreditRequest.ts",
+      "default": "./src/resetCreditRequest.ts"
+    },
     "./secret-request": {
       "types": "./src/secretRequest.ts",
       "default": "./src/secretRequest.ts"

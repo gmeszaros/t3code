@@ -151,14 +151,25 @@ function resolveStaleBackgroundItemProviderInstanceId(
   return projection.providerThreads[0]?.providerInstanceId ?? projection.thread.providerInstanceId;
 }
 
-/** An open item closed by recovery. A secret card also closes its form, so it takes no answer. */
+/**
+ * An open item closed by recovery. A secret card also closes its form, and a
+ * reset card its approval, so either takes no further answer.
+ */
 const cancelledItem = (
   item: OrchestrationV2ThreadProjection["turnItems"][number],
   now: DateTime.Utc,
 ): OrchestrationV2ThreadProjection["turnItems"][number] =>
   item.type === "secret_request" && item.secretStatus === "pending"
     ? { ...item, status: "cancelled", secretStatus: "cancelled", completedAt: now, updatedAt: now }
-    : { ...item, status: "cancelled", completedAt: now, updatedAt: now };
+    : item.type === "reset_credit_request" && item.requestStatus === "pending"
+      ? {
+          ...item,
+          status: "cancelled",
+          requestStatus: "cancelled",
+          completedAt: now,
+          updatedAt: now,
+        }
+      : { ...item, status: "cancelled", completedAt: now, updatedAt: now };
 
 /**
  * A provider thread's latest started run: the last turn that provider saw.

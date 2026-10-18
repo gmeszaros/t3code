@@ -1105,6 +1105,35 @@ it.effect("does not continue a run waiting on a secret the restart closed", () =
   }),
 );
 
+it.effect("does not continue a run waiting on a quota reset approval the restart closed", () =>
+  Effect.gen(function* () {
+    const completedAt = DateTime.makeUnsafe("2026-10-03T10:05:00.000Z");
+    const resetCard = (requestStatus: string, at: DateTime.Utc | null) =>
+      ({ type: "reset_credit_request", runId, requestStatus, completedAt: at }) as never;
+    assert.isUndefined(
+      restartContinuationRun({ ...makeProjection(), turnItems: [resetCard("pending", null)] }, now),
+    );
+    const cut = cutMidTurn({ completedAt });
+    assert.deepEqual(
+      yield* continuationTexts({ ...cut, turnItems: [resetCard("cancelled", completedAt)] }),
+      [],
+    );
+    // A card the user answered earlier in the run does not hold it; an
+    // approved card with its outcome never holds it either.
+    assert.lengthOf(
+      yield* continuationTexts({
+        ...cut,
+        turnItems: [resetCard("cancelled", DateTime.subtract(completedAt, { seconds: 1 }))],
+      }),
+      1,
+    );
+    assert.lengthOf(
+      yield* continuationTexts({ ...cut, turnItems: [resetCard("approved", completedAt)] }),
+      1,
+    );
+  }),
+);
+
 it.effect.each(["completed", "failed", "interrupted"] as const)(
   "does not continue when the provider turn %s before the app run settled",
   (status) =>
