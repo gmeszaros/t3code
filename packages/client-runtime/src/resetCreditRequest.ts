@@ -29,7 +29,7 @@ export type ResetCreditRequestDisplay =
 
 const WINDOW_LABELS = { five_hour: "5-hour", weekly: "weekly" } as const;
 
-export const resetCreditWindowLabel = (windowId: "five_hour" | "weekly") => WINDOW_LABELS[windowId];
+const resetCreditWindowLabel = (windowId: "five_hour" | "weekly") => WINDOW_LABELS[windowId];
 
 /** `visibility` is the projected row's: a request can only be answered where it was asked. */
 export function resetCreditRequestDisplay(

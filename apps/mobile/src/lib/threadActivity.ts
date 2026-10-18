@@ -582,6 +582,8 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
       return "zap";
     case "secret_request":
       return "lock";
+    case "reset_credit_request":
+      return "message";
   }
 }
 
@@ -637,6 +639,7 @@ function itemSummary(
     case "thread_created":
       return "Thread created";
     case "secret_request":
+    case "reset_credit_request":
       return item.label;
     case "dynamic_tool": {
       const classified = classifyToolActivity({
@@ -696,6 +699,7 @@ function itemPreview(item: OrchestrationV2TurnItem): string | null {
     case "thread_created":
       return item.targetThreadId;
     case "secret_request":
+    case "reset_credit_request":
       return item.reason || null;
     case "subagent":
       return item.result ?? item.progress ?? item.prompt;
@@ -1796,6 +1800,12 @@ export function buildThreadFeed(
     // Match the web timeline: only the terminal interrupt result is useful to
     // users; the preceding request is transient bookkeeping.
     if (item.type === "run_interrupt_request") {
+      continue;
+    }
+    // Mobile renders no reset card and cannot answer one, so the item is
+    // dropped here the way forward-compatible decoding drops it on the
+    // official clients; approval stays on surfaces that show the card.
+    if (item.type === "reset_credit_request") {
       continue;
     }
     const attemptId = resolveAttemptId(item);
