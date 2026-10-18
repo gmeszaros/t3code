@@ -10,6 +10,14 @@ export type ModelEsque = {
   isUnavailable?: boolean | undefined;
 };
 
+export function getProviderInstanceLabel(displayName: string, driverLabel: string): string {
+  const name = displayName.trim().toLowerCase();
+  const driver = driverLabel.trim().toLowerCase();
+  return name === driver || name.startsWith(`${driver} `)
+    ? displayName
+    : `${displayName} (${driverLabel})`;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

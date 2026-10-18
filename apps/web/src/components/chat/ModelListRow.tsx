@@ -4,6 +4,7 @@ import { CheckIcon, StarIcon } from "lucide-react";
 import {
   getDisplayModelName,
   getProviderRowLabel,
+  getProviderInstanceLabel,
   getTriggerDisplayModelLabel,
   type ModelEsque,
 } from "./providerIconUtils";
@@ -15,6 +16,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { modelPickerModelKey } from "./modelPickerKeys";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { providerClients } from "../settings/providerDriverMeta";
 
 export const ModelListRow = memo(function ModelListRow(props: {
   index: number;
@@ -44,7 +46,13 @@ export const ModelListRow = memo(function ModelListRow(props: {
   disabledReason?: string | null;
   onToggleFavorite: () => void;
 }) {
-  const providerLabel = getProviderRowLabel(props.providerDisplayName, props.model.subProvider);
+  const providerLabel = getProviderRowLabel(
+    getProviderInstanceLabel(
+      props.providerDisplayName,
+      providerClients.get(props.driverKind)?.label ?? props.driverKind,
+    ),
+    props.model.subProvider,
+  );
 
   const row = (
     <ComboboxItem
