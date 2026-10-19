@@ -129,7 +129,7 @@ const withBridge = <A, E, R>(
         | undefined,
     };
     const control = new SessionControl(
-      `${scope.environmentId}\u0000${scope.thread.providerSessionId}`,
+      `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}`,
     );
     const credential = {
       ...scope.thread,
