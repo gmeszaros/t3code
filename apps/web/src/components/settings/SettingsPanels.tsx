@@ -326,10 +326,13 @@ function AboutVersionSection() {
 
     if (action === "release") {
       const url = getDesktopUpdateReleaseUrl(updateState?.availableVersion ?? null);
-      try {
-        if (url && !(await bridge.openExternal(url)))
+      const result = await settlePromise(async () => {
+        if (url && !(await bridge.openExternal(url))) {
           throw new Error("Could not open Local release.");
-      } catch (error) {
+        }
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
         toastManager.add(
           stackedThreadToast({
             type: "error",

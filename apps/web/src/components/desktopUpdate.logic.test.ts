@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
 import {
@@ -227,6 +227,20 @@ describe("desktop update UI helpers", () => {
     expect(getDesktopUpdateReleaseUrl("0.0.30", "pingdotgg/t3code")).toBe(
       "https://github.com/pingdotgg/t3code/releases/tag/v0.0.30",
     );
+  });
+
+  it("uses the configured repository for non-Local version history", () => {
+    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "example/releases");
+    try {
+      expect(getDesktopUpdateReleaseHistoryUrl("0.0.36-nightly.3")).toBe(
+        "https://github.com/example/releases/releases",
+      );
+      expect(getDesktopUpdateReleaseHistoryUrl("0.0.46-local.3.1")).toBe(
+        "https://github.com/gmeszaros/t3code/releases",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("uses the configured desktop update repository for release URLs", () => {

@@ -288,17 +288,19 @@ function SidebarUpdateControl() {
 
     if (action === "release") {
       const url = getDesktopUpdateReleaseUrl(state.availableVersion);
-      try {
-        if (url && !(await bridge.openExternal(url)))
+      const result = await settlePromise(async () => {
+        if (url && !(await bridge.openExternal(url))) {
           throw new Error("Could not open Local release.");
-      } catch (error) {
+        }
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
         toastUpdateError(
           "Could not open release",
           error instanceof Error ? error.message : "Could not open Local release.",
         );
-      } finally {
-        setIsActionPending(false);
       }
+      setIsActionPending(false);
       return;
     }
 

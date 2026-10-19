@@ -17,10 +17,6 @@ export type Id = typeof Id.Type;
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 
-// ---------------------------------------------------------------------------
-// Shared request fragments
-// ---------------------------------------------------------------------------
-
 export const WorkspaceRef = Schema.Struct({
   workspacePath: Schema.String,
   workspaceIdentity: Schema.optional(Schema.String),
@@ -64,10 +60,6 @@ export const McpServerConfig = Schema.Union([
   }),
 ]);
 export type McpServerConfig = typeof McpServerConfig.Type;
-
-// ---------------------------------------------------------------------------
-// Client -> server requests
-// ---------------------------------------------------------------------------
 
 export const RuntimeCapabilitiesParams = Schema.Struct({});
 
@@ -333,10 +325,6 @@ export const SessionCloseResult = Schema.Struct({
 });
 export type SessionCloseResult = typeof SessionCloseResult.Type;
 
-// ---------------------------------------------------------------------------
-// Server -> client requests
-// ---------------------------------------------------------------------------
-
 export const RequestRuntimePreferencesParams = Schema.Struct({
   sessionId: Schema.optional(Id),
   scope: Schema.String,
@@ -431,10 +419,6 @@ export const RequestUserInputParams = Schema.Struct({
   ),
 });
 export type RequestUserInputParams = typeof RequestUserInputParams.Type;
-
-// ---------------------------------------------------------------------------
-// Notifications (parsed leniently; consumers switch on `method`)
-// ---------------------------------------------------------------------------
 
 export const IncomingNotification = Schema.Struct({
   method: Schema.String,

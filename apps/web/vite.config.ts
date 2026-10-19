@@ -169,7 +169,7 @@ const configuredAllowedHosts = (process.env.T3CODE_DEV_ALLOWED_HOSTS ?? "")
   .filter((entry) => entry.length > 0);
 const allowedHosts = [".ts.net", ...configuredAllowedHosts];
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
   return {
     assetsInclude: ["**/*.wasm"],
     plugins: [
@@ -219,9 +219,13 @@ export default defineConfig(() => {
       "import.meta.env.VITE_RELAY_OTLP_TRACES_TOKEN": JSON.stringify(configuredRelayTracingToken),
       "import.meta.env.VITE_HOSTED_APP_URL": JSON.stringify(configuredHostedAppUrl ?? ""),
       "import.meta.env.VITE_HOSTED_APP_CHANNEL": JSON.stringify(configuredHostedAppChannel),
-      "import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY": JSON.stringify(
-        configuredDesktopUpdateRepository,
-      ),
+      ...(mode === "test"
+        ? {}
+        : {
+            "import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY": JSON.stringify(
+              configuredDesktopUpdateRepository,
+            ),
+          }),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
     },
     resolve: {

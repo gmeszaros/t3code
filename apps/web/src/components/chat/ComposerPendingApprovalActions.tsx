@@ -57,7 +57,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             aria-description={option.warning}
             onClick={() => {
               if (!disabled && !isResponding) {
-                void onRespondToApproval(requestId, option.decision, option.optionId);
+                void (option.optionId === undefined
+                  ? onRespondToApproval(requestId, option.decision)
+                  : onRespondToApproval(requestId, option.decision, option.optionId));
               }
             }}
           >
@@ -91,7 +93,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                   aria-description={option.warning}
                   onClick={() => {
                     if (!disabled && !isResponding)
-                      void onRespondToApproval(requestId, option.decision, option.optionId);
+                      void (option.optionId === undefined
+                        ? onRespondToApproval(requestId, option.decision)
+                        : onRespondToApproval(requestId, option.decision, option.optionId));
                   }}
                   variant="ghost"
                   className="mb-1 last:mb-0"

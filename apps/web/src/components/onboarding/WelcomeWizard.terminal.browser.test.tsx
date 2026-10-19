@@ -530,6 +530,7 @@ describe("welcome agent terminal setup", () => {
   });
 });
 
-vi.mock("../../hooks/useSettings", () => ({
+vi.mock(import("../../hooks/useSettings"), async (original) => ({
+  ...(await original()),
   useUpdateEnvironmentSettings: () => state.updateSettings,
 }));
