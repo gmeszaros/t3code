@@ -6907,6 +6907,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ],
         });
         const resetReceipt = yield* Deferred.make<void>();
+        const lookupReceipt = yield* Deferred.make<void>();
         const readStarted = yield* Deferred.make<void>();
         const readStopped = yield* Deferred.make<void>();
         let reads = 0;
@@ -6917,7 +6918,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             event.turnItem.type === "error" &&
             event.turnItem.failure.resetAt === resetAt
               ? Deferred.succeed(resetReceipt, undefined)
-              : Effect.void,
+              : event.type === "turn_item.updated" &&
+                  event.turnItem.type === "error" &&
+                  /reset-time lookup|usable reset time/.test(event.turnItem.failure.message)
+                ? Deferred.succeed(lookupReceipt, undefined)
+                : Effect.void,
           (method) =>
             method === "account/rateLimits/read"
               ? Effect.sync(() => {
@@ -6975,6 +6980,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario.name === "read-timeout" ||
           scenario.name === "read-no-reset"
         ) {
+          yield* Deferred.await(lookupReceipt);
+          const reason =
+            scenario.name === "read-timeout"
+              ? "lookup timed out"
+              : scenario.name === "read-failed"
+                ? "lookup failed"
+                : "usable reset time";
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.failure.message.includes(reason),
+            ),
+          );
           assert.isNull(terminal.failure.resetAt);
           assert.equal(reads, 1);
           assert.equal(terminal.failure.message, message);

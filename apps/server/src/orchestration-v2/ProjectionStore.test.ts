@@ -3391,6 +3391,75 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("updates a failed goal shell when its reset time arrives after completion", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("late-limit-reset");
+      const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const item = {
+        id: TurnItemId.make("late-limit-reset:error"),
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "failed" as const,
+        title: "Usage limit reached",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "error" as const,
+        failure: {
+          class: "usage_limit" as const,
+          message: "Plan limit reached.",
+          resetAt: null as string | null,
+          code: "usageLimitExceeded",
+          retryable: null,
+        },
+      };
+      yield* store.apply({
+        id: EventId.make("event:late-limit-reset:error"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: item,
+      });
+      yield* store.apply({
+        id: EventId.make("event:late-limit-reset:failed"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...original, status: "failed" },
+      });
+      const assertReset = Effect.fnUntraced(function* (resetAt: string | null) {
+        const memory = ProjectionStore.threadShellFromProjection(
+          yield* store.getThreadProjection(threadId),
+        );
+        const sql = (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId)!;
+        for (const shell of [memory, sql]) {
+          assert.equal(shell.lastErrorClass, "usage_limit");
+          assert.equal(shell.usageLimitResetAt, resetAt);
+          assert.equal(shell.latestRunId, original.id);
+          assert.equal(shell.status, "failed");
+        }
+      });
+      yield* assertReset(null);
+      const resetAt = "2099-01-01T00:00:00.000Z";
+      yield* store.apply({
+        id: EventId.make("event:late-limit-reset:enriched"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...item, failure: { ...item.failure, resetAt } },
+      });
+      yield* assertReset(resetAt);
+    }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;

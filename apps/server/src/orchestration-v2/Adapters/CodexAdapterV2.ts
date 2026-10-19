@@ -5642,17 +5642,53 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (current.failure.resetAt == null) {
               // A cold session can hit its limit before any rolling usage notification.
               // Fork so the notification reader remains free to receive the RPC response.
+              const reportUnknownReset = (reason: string) =>
+                Effect.gen(function* () {
+                  const latest = (yield* Ref.get(limitedTurnItems)).get(context.providerThread.id);
+                  if (
+                    latest?.providerTurnId !== item.providerTurnId ||
+                    latest.failure.resetAt != null
+                  )
+                    return;
+                  const updated = {
+                    ...latest,
+                    updatedAt: yield* DateTime.now,
+                    failure: { ...latest.failure, message: `${item.failure.message} ${reason}` },
+                  };
+                  // Keep the original message so a later successful update removes this explanation.
+                  yield* emitProviderEvent({
+                    type: "turn_item.updated",
+                    driver: CODEX_PROVIDER,
+                    turnItem: updated,
+                  });
+                });
               yield* client.request("account/rateLimits/read", null).pipe(
                 Effect.flatMap((response) =>
-                  applyRateLimits(response.rateLimitsByLimitId?.codex ?? response.rateLimits),
+                  applyRateLimits(response.rateLimitsByLimitId?.codex ?? response.rateLimits).pipe(
+                    Effect.andThen(
+                      reportUnknownReset("The provider did not return a usable reset time."),
+                    ),
+                  ),
                 ),
                 Effect.timeoutOption("2 seconds"),
                 Effect.tap((result) =>
                   Option.isNone(result)
-                    ? Effect.logWarning("Codex reset-time recovery request timed out.")
+                    ? reportUnknownReset(
+                        "The reset-time lookup timed out. Retry manually when quota is available.",
+                      ).pipe(
+                        Effect.andThen(
+                          Effect.logWarning("Codex reset-time recovery request timed out."),
+                        ),
+                      )
                     : Effect.void,
                 ),
-                Effect.catch(() => Effect.logWarning("Codex reset-time recovery request failed.")),
+                Effect.catch(() =>
+                  reportUnknownReset(
+                    "The reset-time lookup failed. Retry manually when quota is available.",
+                  ).pipe(
+                    Effect.andThen(Effect.logWarning("Codex reset-time recovery request failed.")),
+                  ),
+                ),
                 Effect.forkIn(scope),
               );
             }
