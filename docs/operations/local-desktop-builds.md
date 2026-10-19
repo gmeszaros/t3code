@@ -2,7 +2,7 @@
 
 ## Repository decision (2026-10-14)
 
-Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` at the selected published upstream nightly commit. The `local` branch preserves our feature commits and merges updated `main` without rewriting history. Create feature PRs against `local`, so their diffs contain only the feature changes.
+Use `gmeszaros/t3code`, a GitHub fork of `pingdotgg/t3code`. Keep `main` synchronized with upstream main. The `local` branch preserves our feature commits and merges updated `main` without rewriting history. Create feature PRs against `local`, so their diffs contain only the feature changes.
 
 The fork is public and its default branch is `local`. Both release checks and download links use this fork. Keep the reviewed Local build and update workflows available on that default branch so GitHub can dispatch them.
 
@@ -18,24 +18,32 @@ Use `--output-dir <directory>` to keep artifacts outside the checkout.
 
 Create feature worktrees from the latest hosted `local` and open feature PRs against `local`. Use squash merge for feature PRs. Upstream integrations use merge commits and preserve existing Local history.
 
-The `Local upstream update` workflow fast-forwards the fork's clean `main` to
-the latest published upstream nightly, then merges that exact revision into a
-disposable candidate based on `local`. This preserves the identity of every Local
-commit, including earlier integration merges. No rebase or force-push is used.
-GitHub's **Sync fork** follows upstream branch HEAD instead of a release tag;
-use the workflow when the published nightly is the required boundary.
+The `Local upstream integration` workflow checks upstream main every six hours
+(at minute 17 UTC) and can also be dispatched manually. It fast-forwards the
+fork's clean `main`, then prepares at most 25 first-parent commits beyond the
+last integrated upstream boundary. Upstream merge commits stay intact and may
+contain more commits internally. It opens one draft integration PR against
+`local` and explicitly dispatches CI for its exact branch using the short-lived
+GitHub token. No PAT is required. Enable Actions to create pull requests in the
+repository's Actions settings before enabling this workflow.
 
-A sync is allowed only when the existing fork `main` is an ancestor of the selected
-nightly. Diverged or newer fork history stops the workflow without rewriting it.
-After synchronization, `main` remains updated even if the candidate later conflicts
-or fails verification. Conflicts require a reviewed resolution; do not discard
-Local changes or automatically choose one side.
+Only one `updates/upstream-*` PR may be open. Later runs keep that revision
+stable until it is reviewed and merged or closed. Conflicts stop the batch and
+require manual resolution; Local changes are never discarded. A failed PR
+creation can be retried against its already-pushed branch. If CI dispatch fails
+after PR creation, dispatch `CI` against that PR branch manually.
 
-Feature PRs contain only feature/workflow changes and target `local`. Upstream
-integration normally uses the update pipeline. When the candidate conflicts,
-resolve the same integration in a reviewed PR against `local`, preserving both
-parent histories. Include any explicitly requested pending Local fixes in that
-PR; do not rebase or force-push the published `local` branch.
+Keep features and dependency patches in separate PRs. Never squash upstream
+integration PRs: use a merge preserving both histories. Review and merge are
+manual, and synchronization does not build a release or install the app.
+Frequent checks limit normal drift; a blocked integration still needs attention
+before the next batch can proceed. The first large catch-up remains in PR25;
+its published history is not rewritten to introduce this process.
+
+The older `Local upstream update` workflow remains a manual published-nightly
+build/release path. It can stop safely when fork main is newer than the selected
+nightly; do not rewind main to make it pass. For a Local revision already
+integrated through the PR path, use `Local desktop build` for release delivery.
 
 The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 
@@ -86,7 +94,7 @@ Further feature work starts from the updated `local`; its original feature commi
 remain in history. Download and install remain manual; the app does not dispatch
 this workflow yet.
 
-GitHub requires a dispatchable workflow to exist on the default branch. The fork uses `local` as that default so `main` can remain identical to upstream. Preserve this setting when maintaining the workflows. No PAT, signing secret, schedule or self-hosted runner is required.
+GitHub requires a dispatchable workflow to exist on the default branch. The fork uses `local` as that default so `main` can remain identical to upstream. Preserve this setting when maintaining the workflows. No PAT, signing secret or self-hosted runner is required.
 
 ### Publishing a verified Local release
 
@@ -107,7 +115,7 @@ Local packaging remains available as a fallback with `node scripts/build-local-d
 Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
 
 Keep `CI`, `Mobile Fingerprint Check`, `Local desktop build` and
-`Local upstream update` enabled as this fork's repository-owned workflows.
+`Local upstream update` and `Local upstream integration` enabled as this fork's repository-owned workflows.
 GitHub's managed `Dependency Graph` workflow may also appear when dependency
 alerts are enabled. Keep unrelated inherited upstream
 workflows disabled, including scheduled Android builds and workflows requiring
@@ -159,5 +167,5 @@ replace a secret scan or verification of the changed behavior.
 Standard GitHub-hosted runner use is free for public repositories. Private
 repositories consume the owner's included allowance, with charges beyond it;
 artifact storage also has an allowance. See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
-Short retention and manual runs limit usage but do not enforce a spending cap.
+Short retention and a single pending integration PR limit usage but do not enforce a spending cap.
 For a private repository, configure the owner's Actions budget before running.
