@@ -6674,6 +6674,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "usage_limit",
     },
     {
+      name: "partial-reset",
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
+    {
       name: "late-reset",
       code: "usageLimitExceeded",
       notification: false,
@@ -6733,8 +6739,26 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario: `codex-limit-${scenario.name}`,
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
-            ...(scenario.name === "known-reset" || scenario.name === "deferred-reset"
-              ? [snapshot]
+            ...(["known-reset", "deferred-reset", "partial-reset"].includes(scenario.name)
+              ? [
+                  snapshot,
+                  ...(scenario.name === "partial-reset"
+                    ? [
+                        {
+                          ...snapshot,
+                          frame: {
+                            ...snapshot.frame,
+                            params: {
+                              rateLimits: {
+                                limitId: "codex",
+                                primary: { usedPercent: 100, windowDurationMins: 300 },
+                              },
+                            },
+                          },
+                        },
+                      ]
+                    : []),
+                ]
               : []),
             ...(scenario.name === "deferred-reset"
               ? [
@@ -6817,7 +6841,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             ...(scenario.name === "late-reset" ? [snapshot] : []),
             ...(scenario.expectedClass === "usage_limit" &&
-            !["known-reset", "deferred-reset", "read-timeout"].includes(scenario.name)
+            !["known-reset", "deferred-reset", "partial-reset", "read-timeout"].includes(
+              scenario.name,
+            )
               ? [
                   {
                     type: "expect_outbound" as const,
@@ -6931,7 +6957,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (terminal?.status !== "failed") return;
         assert.equal(terminal.failure.class, scenario.expectedClass);
         assert.equal(terminal.threadDisposition, "reusable");
-        if (scenario.name === "known-reset" || scenario.name === "deferred-reset")
+        if (["known-reset", "deferred-reset", "partial-reset"].includes(scenario.name))
           assert.equal(terminal.failure.resetAt, resetAt);
         if (scenario.name === "fetched-reset" || scenario.name === "fetched-multi-bucket") {
           assert.isTrue(
@@ -6953,7 +6979,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.equal(reads, 1);
           assert.equal(terminal.failure.message, message);
         }
-        if (scenario.name === "known-reset" || scenario.expectedClass === "provider_error")
+        if (
+          ["known-reset", "partial-reset"].includes(scenario.name) ||
+          scenario.expectedClass === "provider_error"
+        )
           assert.equal(reads, 0);
         if (scenario.name === "matching-details")
           assert.equal(terminal.failure.message, "Detailed provider allowance explanation.");

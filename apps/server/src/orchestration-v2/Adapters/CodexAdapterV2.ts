@@ -4320,7 +4320,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* Ref.update(rateLimitSnapshot, (previous) =>
               mergeCodexRateLimits(previous, snapshot),
             );
-            const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
+            const resetAt = codexUsageLimitResetAt(
+              yield* Ref.get(rateLimitSnapshot),
+              DateTime.toEpochMillis(yield* DateTime.now),
+            );
             for (const item of (yield* Ref.get(limitedTurnItems)).values()) {
               if (resetAt === null || item.failure.resetAt != null) continue;
               const updated = {
@@ -5564,7 +5567,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   failure.class === "usage_limit"
                     ? {
                         ...failure,
-                        resetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+                        resetAt: codexUsageLimitResetAt(
+                          yield* Ref.get(rateLimitSnapshot),
+                          DateTime.toEpochMillis(yield* DateTime.now),
+                        ),
                       }
                     : failure,
                 ...(input.providerRetry === undefined
@@ -5601,7 +5607,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ...event.failure,
                     resetAt:
                       event.failure.resetAt ??
-                      codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+                      codexUsageLimitResetAt(
+                        yield* Ref.get(rateLimitSnapshot),
+                        DateTime.toEpochMillis(yield* DateTime.now),
+                      ),
                   },
                 }
               : event;
@@ -5638,7 +5647,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   applyRateLimits(response.rateLimitsByLimitId?.codex ?? response.rateLimits),
                 ),
                 Effect.timeoutOption("2 seconds"),
-                Effect.catch(() => Effect.void),
+                Effect.tap((result) =>
+                  Option.isNone(result)
+                    ? Effect.logWarning("Codex reset-time recovery request timed out.")
+                    : Effect.void,
+                ),
+                Effect.catch(() => Effect.logWarning("Codex reset-time recovery request failed.")),
                 Effect.forkIn(scope),
               );
             }

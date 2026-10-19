@@ -284,6 +284,25 @@ describe("mergeCodexRateLimits", () => {
     });
   });
 
+  it("retains an exhausted window reset omitted by a later partial update", () => {
+    const previous = {
+      primary: { usedPercent: 100, resetsAt: 2000100000, windowDurationMins: 300 },
+    };
+    const merged = mergeCodexRateLimits(previous, {
+      primary: { usedPercent: 100, windowDurationMins: 300 },
+    });
+    expect(codexUsageLimitResetAt(merged, 0)).toBe("2033-05-19T07:20:00.000Z");
+    expect(codexUsageLimitResetAt(merged, 2000100000 * 1000)).toBeNull();
+    for (const primary of [
+      null,
+      { usedPercent: 100, resetsAt: null, windowDurationMins: 300 },
+      { usedPercent: 100, windowDurationMins: 10080 },
+      { usedPercent: 20, windowDurationMins: 300 },
+    ]) {
+      expect(codexUsageLimitResetAt(mergeCodexRateLimits(previous, { primary }), 0)).toBeNull();
+    }
+  });
+
   it("ignores a model-specific snapshot so it cannot replace the main allowance", () => {
     const main = {
       limitId: "codex",
@@ -303,14 +322,17 @@ import { codexUsageLimitResetAt } from "./codexUsageLimits.ts";
 describe("codexUsageLimitResetAt", () => {
   it("waits for every exhausted window and never invents an unknown reset", () => {
     expect(
-      codexUsageLimitResetAt({
-        primary: { usedPercent: 100, resetsAt: 2000000000 },
-        secondary: { usedPercent: 100, resetsAt: 2000100000 },
-      }),
+      codexUsageLimitResetAt(
+        {
+          primary: { usedPercent: 100, resetsAt: 2000000000 },
+          secondary: { usedPercent: 100, resetsAt: 2000100000 },
+        },
+        0,
+      ),
     ).toBe("2033-05-19T07:20:00.000Z");
-    expect(codexUsageLimitResetAt({ primary: { usedPercent: 100 } })).toBeNull();
+    expect(codexUsageLimitResetAt({ primary: { usedPercent: 100 } }, 0)).toBeNull();
     expect(
-      codexUsageLimitResetAt({ primary: { usedPercent: 50, resetsAt: 2000000000 } }),
+      codexUsageLimitResetAt({ primary: { usedPercent: 50, resetsAt: 2000000000 } }, 0),
     ).toBeNull();
   });
 });

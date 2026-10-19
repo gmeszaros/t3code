@@ -143,6 +143,27 @@ export function codexRateLimitsFailureMessage(error: CodexErrors.CodexAppServerE
   }
 }
 
+function mergeCodexRateLimitWindow(
+  previous: CodexRateLimitWindow | null | undefined,
+  update: CodexRateLimitWindow | null,
+): CodexRateLimitWindow | null {
+  // An omitted timestamp is a partial update, but null or a new window clears it.
+  if (
+    previous &&
+    update &&
+    update.resetsAt === undefined &&
+    update.usedPercent >= 100 &&
+    previous.usedPercent >= 100 &&
+    update.windowDurationMins === previous.windowDurationMins
+  ) {
+    return {
+      ...update,
+      ...(previous.resetsAt !== undefined ? { resetsAt: previous.resetsAt } : {}),
+    };
+  }
+  return update;
+}
+
 /**
  * Codex sends `account/rateLimits/updated` as a partial view of the snapshot: a
  * field the update omits keeps the value observed earlier in the session, so a
@@ -164,8 +185,12 @@ export function mergeCodexRateLimits(
     ...(update.rateLimitReachedType !== undefined
       ? { rateLimitReachedType: update.rateLimitReachedType }
       : {}),
-    ...(update.primary !== undefined ? { primary: update.primary } : {}),
-    ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
+    ...(update.primary !== undefined
+      ? { primary: mergeCodexRateLimitWindow(previous.primary, update.primary) }
+      : {}),
+    ...(update.secondary !== undefined
+      ? { secondary: mergeCodexRateLimitWindow(previous.secondary, update.secondary) }
+      : {}),
   };
 }
 
@@ -213,10 +238,15 @@ export function codexUsageLimitMessage(
 /** All exhausted windows must reset before a continuation can run. */
 export function codexUsageLimitResetAt(
   snapshot: CodexRateLimitSnapshot | undefined,
+  nowMs: number,
 ): string | null {
   if (!snapshot) return null;
   const windows = codexRateLimitsToWindows(snapshot).filter((window) => window.usedPercent >= 100);
-  if (windows.length === 0 || windows.some((window) => !window.resetsAt)) return null;
+  if (
+    windows.length === 0 ||
+    windows.some((window) => !window.resetsAt || Date.parse(window.resetsAt) <= nowMs)
+  )
+    return null;
   return windows.reduce<string | null>(
     (latest, window) =>
       latest === null || Date.parse(window.resetsAt!) > Date.parse(latest)
