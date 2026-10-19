@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
   projects: [] as Array<{ id: string; environmentId: string; workspaceRoot: string }>,
 }));
+vi.mock("../../hooks/useSettings", () => ({ useUpdateEnvironmentSettings: () => vi.fn() }));
 vi.mock("../../state/session", () => ({
   useEnvironmentScope: () => true,
   useEnvironmentsWithScope: (environments: Array<{ environmentId: string }>) =>

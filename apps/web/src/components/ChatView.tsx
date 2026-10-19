@@ -5920,7 +5920,7 @@ export default function ChatView(props: ChatViewProps) {
     sendInFlightRef.current = true;
     setResumingThreadKeys((current) => new Set(current).add(routeThreadKey));
     setThreadError(threadId, null);
-    try {
+    await (async () => {
       const resume = async () => {
         if (resumableRunId === null) {
           return resumeThreadQueue({ environmentId, input: { threadId } });
@@ -5968,14 +5968,14 @@ export default function ChatView(props: ChatViewProps) {
         clearUsageLimitsFor(routeThreadKey);
         if (currentRouteThreadKeyRef.current === routeThreadKey) scrollToEnd();
       }
-    } finally {
+    })().finally(() => {
       sendInFlightRef.current = false;
       setResumingThreadKeys((current) => {
         const next = new Set(current);
         next.delete(routeThreadKey);
         return next;
       });
-    }
+    });
   };
 
   const onSend = async (

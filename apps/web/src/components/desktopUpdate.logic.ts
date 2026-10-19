@@ -51,7 +51,11 @@ export function getDesktopUpdateReleaseHistoryUrl(
 ): string {
   return isLocalDesktopVersion(versionOrRepository)
     ? "https://github.com/gmeszaros/t3code/releases"
-    : desktopReleaseRepositoryUrl(versionOrRepository);
+    : desktopReleaseRepositoryUrl(
+        /^\d+\.\d+\.\d+/.test(versionOrRepository)
+          ? import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY
+          : versionOrRepository,
+      );
 }
 
 export function resolveDesktopUpdateButtonAction(

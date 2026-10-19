@@ -3516,10 +3516,13 @@ export default function LegacySidebar() {
 
     if (desktopUpdateButtonAction === "release") {
       const url = getDesktopUpdateReleaseUrl(desktopUpdateState.availableVersion);
-      try {
-        if (url && !(await bridge.openExternal(url)))
+      const result = await settlePromise(async () => {
+        if (url && !(await bridge.openExternal(url))) {
           throw new Error("Could not open Local release.");
-      } catch (error) {
+        }
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -3527,9 +3530,8 @@ export default function LegacySidebar() {
             description: error instanceof Error ? error.message : "Could not open Local release.",
           }),
         );
-      } finally {
-        setDesktopUpdateActionPending(false);
       }
+      setDesktopUpdateActionPending(false);
       return;
     }
 
