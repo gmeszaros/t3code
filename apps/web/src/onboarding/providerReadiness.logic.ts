@@ -57,7 +57,6 @@ const PROVIDER_STATE_PRIORITY = {
   ready: 5,
 } as const;
 
-/** Select the most usable configured instance for each provider driver. */
 export function selectOnboardingProvidersByDriver(
   providers: ReadonlyArray<ServerProvider> | null | undefined,
 ) {
@@ -95,12 +94,6 @@ const NATIVE_INSTALL_COMMANDS = {
   },
 } as const;
 
-/**
- * Install command for the setup terminal, keyed on the environment's platform
- * (not the client's): a Windows desktop driving a WSL server gets the shell
- * script. Unknown platforms get the shell script too, since the terminal there
- * is a POSIX shell in practice.
- */
 export function resolveOnboardingProviderInstallCommand(
   driver: keyof typeof NATIVE_INSTALL_COMMANDS | "zcode",
   platform: ExecutionEnvironmentPlatformOs,
@@ -110,7 +103,6 @@ export function resolveOnboardingProviderInstallCommand(
   return platform === "windows" ? commands.windows : commands.posix;
 }
 
-/** Use the selected provider instance's binary when the setup terminal opens its login flow. */
 export function resolveOnboardingProviderLoginCommand(
   provider: ServerProvider,
   settings: ServerSettings,

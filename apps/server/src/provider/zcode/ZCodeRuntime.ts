@@ -107,7 +107,7 @@ const firstExisting = Effect.fn("t3-provider-zcode/firstExisting")(function* (
 
 /**
  * Resolves the official ZCode runtime. The installed desktop app bundle is
- * the default (its Electron binary runs `zcode.cjs` in node mode), keeping
+ * the default (its background helper runs `zcode.cjs` in node mode), keeping
  * the signed vendor runtime untouched; a configured `binaryPath` overrides
  * it for custom installs.
  */
@@ -141,7 +141,16 @@ export const resolveZCodeRuntime = Effect.fn("t3-provider-zcode/resolveZCodeRunt
 
   for (const candidate of APP_BUNDLE_CANDIDATES) {
     const contents = expandHome(candidate, home);
-    const command = path.join(contents, "MacOS", "ZCode");
+    // The main app executable registers a foreground application even in Node mode.
+    // The signed helper is an LSUIElement agent, including for runtime helper children.
+    const command = path.join(
+      contents,
+      "Frameworks",
+      "ZCode Helper.app",
+      "Contents",
+      "MacOS",
+      "ZCode Helper",
+    );
     const entryScript = path.join(contents, "Resources", "glm", "zcode.cjs");
     const builtinProviderConfigFile = path.join(
       contents,

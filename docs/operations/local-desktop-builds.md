@@ -32,8 +32,10 @@ or fails verification. Conflicts require a reviewed resolution; do not discard
 Local changes or automatically choose one side.
 
 Feature PRs contain only feature/workflow changes and target `local`. Upstream
-integration is a merge performed by the update pipeline, not a rebased patch
-series or an upstream integration PR.
+integration normally uses the update pipeline. When the candidate conflicts,
+resolve the same integration in a reviewed PR against `local`, preserving both
+parent histories. Include any explicitly requested pending Local fixes in that
+PR; do not rebase or force-push the published `local` branch.
 
 The build fetches upstream main and records its real merge base with the source revision. An explicit `--upstream-sha <sha>` must also be an ancestor of that source. Keep build, publication and installation in one update round. One final publication approval covers the reviewed feature branch, PR merge and release. Install only after active runs finish.
 

@@ -1,5 +1,3 @@
-// This file mostly exists because we want dev mode to say "T3 Code (Dev)" instead of "electron"
-
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
@@ -33,7 +31,7 @@ export function resolveLauncherIdentity(environment, suffix = "local") {
     };
   }
   return {
-    displayName: "T3 Code (Alpha)",
+    displayName: "T3 Code (Beta)",
     bundleId: "com.t3tools.t3code",
     protocolSchemes: ["t3code"],
   };

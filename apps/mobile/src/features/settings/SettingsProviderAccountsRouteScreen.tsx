@@ -1,16 +1,19 @@
 import { sortBySavedOrder } from "@t3tools/shared/serverSettings";
+import * as Dialog from "../../components/ui/Dialog";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ProviderAuthResponse, ServerProvider } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useRef, useState } from "react";
-import { Alert, Linking, Pressable, ScrollView, TextInput, View } from "react-native";
+import { Linking, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
-import { ScreenScrollView } from "../../components/ScreenScrollView";
+import { AppText as Text } from "../../components/ui/AppText";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -25,6 +28,7 @@ import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-en
 
 export function SettingsProviderAccountsRouteScreen() {
   const { selectedTargets } = useSettingsEnvironmentFilter();
+  const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
   const insets = useSafeAreaInsets();
   return (
     <>
@@ -42,7 +46,7 @@ export function SettingsProviderAccountsRouteScreen() {
             selectedTargets.map((environment) => (
               <SettingsSection key={environment.environmentId} title={environment.label}>
                 {sortBySavedOrder(
-                  environment.serverConfig.providers,
+                  providersByEnvironment.get(environment.environmentId) ?? [],
                   environment.serverConfig.settings.providerOrder,
                   (provider) => provider.instanceId,
                 )
@@ -58,7 +62,7 @@ export function SettingsProviderAccountsRouteScreen() {
                       provider={provider}
                     />
                   ))}
-                {!environment.serverConfig.providers.some(
+                {!(providersByEnvironment.get(environment.environmentId) ?? []).some(
                   (provider) =>
                     provider.setup?.canAuthenticate ||
                     (provider.driver === "acpRegistry" && provider.installed),
@@ -128,20 +132,15 @@ function ProviderAccount({
     pendingRef.current = true;
     setPending(true);
     setError(null);
-    let succeeded = false;
-    try {
-      const result = await command();
-      if (result._tag === "Success") succeeded = true;
-      else if (!isAtomCommandInterrupted(result)) {
-        const failure = squashAtomCommandFailure(result);
-        setError(failure instanceof Error ? failure.message : "Could not update provider sign-in.");
-      }
-    } catch {
-      setError("Could not update provider sign-in.");
-    }
+    const result = await command();
     pendingRef.current = false;
     setPending(false);
-    return succeeded;
+    if (result._tag === "Success") return true;
+    if (!isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      setError(failure instanceof Error ? failure.message : "Could not update provider sign-in.");
+    }
+    return false;
   }
   function send(response: ProviderAuthResponse) {
     if (!state?.flowId || !interaction) return Promise.resolve(false);
@@ -338,7 +337,7 @@ function ProviderAccount({
           tone="danger"
           disabled={disabled || state === null}
           onPress={() =>
-            Alert.alert(
+            Dialog.alert(
               "Sign out?",
               `Running threads sharing this sign-in on ${environment.label} will stop. Thread history is kept.`,
               [
