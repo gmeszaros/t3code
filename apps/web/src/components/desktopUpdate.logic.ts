@@ -2,7 +2,24 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/con
 
 export type DesktopUpdateButtonAction = "download" | "install" | "release" | "none";
 
-const DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
+const DEFAULT_DESKTOP_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9._-]+$/u;
+
+function isValidRepositorySegment(value: string | undefined): value is string {
+  return (
+    value !== undefined && value !== "." && value !== ".." && GITHUB_REPOSITORY_SEGMENT.test(value)
+  );
+}
+
+function desktopReleaseRepositoryUrl(repository: string | undefined): string {
+  const configuredRepository = repository?.trim() ?? "";
+  const [owner, name, ...extra] = configuredRepository.split("/");
+  const releaseRepository =
+    isValidRepositorySegment(owner) && isValidRepositorySegment(name) && extra.length === 0
+      ? configuredRepository
+      : DEFAULT_DESKTOP_RELEASE_REPOSITORY;
+  return `https://github.com/${releaseRepository}/releases`;
+}
 
 /**
  * The main process fills `downloadedVersion` from the updater's `update-downloaded`
@@ -13,11 +30,15 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
   return state.downloadedVersion ?? state.availableVersion;
 }
 
-/** Release notes for an exact downloaded build; nightly suffixes are part of the tag. */
-export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
+export function getDesktopUpdateReleaseUrl(
+  version: string | null,
+  repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  const history = getDesktopUpdateReleaseHistoryUrl(normalizedVersion);
+  const history = isLocalDesktopVersion(normalizedVersion)
+    ? getDesktopUpdateReleaseHistoryUrl(normalizedVersion)
+    : desktopReleaseRepositoryUrl(repository);
   return `${history}/tag/v${encodeURIComponent(normalizedVersion)}`;
 }
 
@@ -25,10 +46,12 @@ export function isLocalDesktopVersion(version: string): boolean {
   return /^\d+\.\d+\.\d+-local\.\d+\.\d+$/.test(version);
 }
 
-export function getDesktopUpdateReleaseHistoryUrl(version = ""): string {
-  return isLocalDesktopVersion(version)
+export function getDesktopUpdateReleaseHistoryUrl(
+  versionOrRepository: string = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY ?? "",
+): string {
+  return isLocalDesktopVersion(versionOrRepository)
     ? "https://github.com/gmeszaros/t3code/releases"
-    : DESKTOP_RELEASE_HISTORY_URL;
+    : desktopReleaseRepositoryUrl(versionOrRepository);
 }
 
 export function resolveDesktopUpdateButtonAction(

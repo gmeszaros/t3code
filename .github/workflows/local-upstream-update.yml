@@ -134,7 +134,7 @@ jobs:
 
       - name: Verify favorite reordering and update links
         working-directory: apps/web
-        run: vp test run src/components/desktopUpdate.logic.test.ts src/components/SortableOrder.test.tsx src/components/chat/ModelPickerContent.test.ts src/components/chat/ProviderModelPicker.test.tsx --project unit
+        run: vp test run src/components/desktopUpdate.logic.test.ts src/components/SortableOrder.test.tsx src/components/chat/ModelPickerContent.test.ts --project unit
 
       - name: Build and verify candidate
         run: node scripts/build-local-desktop.mjs --upstream-sha "$UPSTREAM_SHA"

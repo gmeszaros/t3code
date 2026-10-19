@@ -34,6 +34,30 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("upgrades deployed Local migration 63 without losing project folders", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 63 });
+      const folders = JSON.stringify([{ id: "folder-1", name: "Saved" }]);
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at, thread_folders_json)
+        VALUES ('project-1', 'Saved', '/project', '[]', '2026-01-01', '2026-01-01', ${folders})
+      `;
+
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [64, "DropUnusedV1Projections"],
+        [65, "CanonicalizeThreadPullRequestLinks"],
+      ]);
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_folders_json FROM projection_projects WHERE project_id = 'project-1'`,
+        [{ thread_folders_json: folders }],
+      );
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

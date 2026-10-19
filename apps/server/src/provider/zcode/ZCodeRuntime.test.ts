@@ -12,7 +12,8 @@ import {
 
 const runtime: ZCodeResolvedRuntime = {
   kind: "app-bundle",
-  command: "/Applications/ZCode.app/Contents/MacOS/ZCode",
+  command:
+    "/Applications/ZCode.app/Contents/Frameworks/ZCode Helper.app/Contents/MacOS/ZCode Helper",
   entryScript: "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
   prefixArgs: [],
   builtinProviderConfigFile:
@@ -111,6 +112,14 @@ it.effect.each([
 
 it.effect.each([
   ["an executable alone", [localBundle.command]],
+  [
+    "a main-app executable without a background helper",
+    [
+      "/Applications/ZCode.app/Contents/MacOS/ZCode",
+      runtime.entryScript!,
+      runtime.builtinProviderConfigFile!,
+    ],
+  ],
   ["a script alone", [runtime.entryScript!]],
   ["a bundle missing its catalog", [localBundle.command, localBundle.entryScript!]],
   [
