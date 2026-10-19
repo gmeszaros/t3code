@@ -4,7 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { mergeLocalUpdate } from "./merge-local-update.mjs";
+import { mergeLocalUpdate, selectUpstreamBatch } from "./merge-local-update.mjs";
 
 function fixture(run) {
   const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "local-update-test-"));
@@ -97,4 +97,29 @@ it("previous Local merges remain intact during the next update", () =>
     f.git("merge-base", "--is-ancestor", localSha, result);
     NodeAssert.equal(f.git("show", `${result}:side`), "side change");
     NodeAssert.equal(f.git("show", `${result}:mainline`), "mainline change");
+  }));
+
+it("selects bounded batches and advances from the last integrated boundary", () =>
+  fixture((f) => {
+    f.git("switch", "main");
+    const second = f.commit("upstream", "second upstream change\n");
+    const third = f.commit("upstream", "third upstream change\n");
+    NodeAssert.equal(selectUpstreamBatch({ ...f, upstreamSha: third, limit: 1 }), f.upstreamSha);
+    NodeAssert.equal(selectUpstreamBatch({ ...f, upstreamSha: third, limit: 2 }), second);
+    NodeAssert.equal(selectUpstreamBatch({ ...f, upstreamSha: third }), third);
+    f.git("switch", "local");
+    const integrated = mergeLocalUpdate(f);
+    NodeAssert.equal(
+      selectUpstreamBatch({ ...f, localSha: integrated, upstreamSha: third, limit: 1 }),
+      second,
+    );
+    NodeAssert.equal(selectUpstreamBatch({ ...f, localSha: integrated }), null);
+    NodeAssert.equal(f.git("rev-parse", "local"), f.localSha);
+  }));
+
+it("rejects invalid batch limits", () =>
+  fixture((f) => {
+    for (const limit of [0, -1, 1.5, 101]) {
+      NodeAssert.throws(() => selectUpstreamBatch({ ...f, limit }), /Batch limit/);
+    }
   }));

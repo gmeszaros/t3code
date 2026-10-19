@@ -1,0 +1,98 @@
+name: Local upstream integration
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-upstream-integration
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: github.repository == 'gmeszaros/t3code' && github.ref == 'refs/heads/local'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: local
+          fetch-depth: 0
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Synchronize main without rewriting history
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor origin/main upstream/main
+          git push origin refs/remotes/upstream/main:refs/heads/main
+
+      - name: Prepare one bounded integration
+        id: candidate
+        run: |
+          set -euo pipefail
+          pending="$(gh pr list --base local --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("updates/upstream-"))] | length')"
+          if [[ "$pending" != 0 ]]; then
+            echo 'An upstream integration PR is already open; retaining its exact revision.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          export LOCAL_SHA="$(git rev-parse HEAD)"
+          export UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          target="$(node --input-type=module -e 'import { selectUpstreamBatch } from "./scripts/merge-local-update.mjs"; console.log(selectUpstreamBatch({cwd:process.cwd(),localSha:process.env.LOCAL_SHA,upstreamSha:process.env.UPSTREAM_SHA}) ?? "")')"
+          if [[ -z "$target" ]]; then
+            echo 'Local already contains upstream main.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch="updates/upstream-$target"
+          # A prior partial run may have pushed the branch before PR creation failed.
+          if git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
+            git fetch --no-tags origin "refs/heads/$branch"
+            git checkout --detach FETCH_HEAD
+            git merge-base --is-ancestor "$LOCAL_SHA" HEAD
+            git merge-base --is-ancestor "$target" HEAD
+          else
+            base="$(git merge-base "$LOCAL_SHA" "$target")"
+            git config user.name github-actions
+            git config user.email github-actions@users.noreply.github.com
+            if ! node scripts/merge-local-update.mjs --local "$LOCAL_SHA" --base "$base" --upstream "$target"; then
+              echo "Upstream integration conflicts at $target. Resolve this batch manually; no branch or PR was published." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Open integration PR and explicitly start CI
+        if: steps.candidate.outputs.branch != ''
+        env:
+          BRANCH: ${{ steps.candidate.outputs.branch }}
+          TARGET: ${{ steps.candidate.outputs.target }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/integration-body.md" <<EOF_BODY
+          Integrate the next upstream batch through $TARGET into Local, preserving both histories. Each batch contains at most 25 first-parent commits; a merge commit may include additional commits from its merged branch.
+
+          This PR contains upstream integration only. Feature and dependency changes use separate PRs. CI is dispatched explicitly for this exact branch. Review and merge remain manual; no release or installation is triggered.
+          EOF_BODY
+          url="$(gh pr create --base local --head "$BRANCH" --draft --title "chore(local): integrate upstream through ${TARGET:0:10}" --body-file "$RUNNER_TEMP/integration-body.md")"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run ci.yml --ref "$BRANCH"
