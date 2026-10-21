@@ -60,7 +60,7 @@ The `Local desktop build` workflow builds and verifies a self-contained macOS ar
 
 The tag trigger uses the workflow from the tagged commit, so `main` stays identical to upstream. Manual dispatch is available because the workflows exist on the default `local` branch. The inherited upstream release workflow excludes Local tags.
 
-The app checks the latest published Local release and opens its download page from the sidebar update icon or Settings. It never replaces the app automatically. Release assets remain available after Actions artifacts expire; the workflow's intermediate artifact is retained for one day.
+The app checks the latest published Local release. On macOS arm64, the sidebar update icon and Settings can prepare it in the background for installation on the next launch. Release assets remain available after Actions artifacts expire; the workflow's intermediate artifact is retained for one day.
 
 ### Building a feature branch without publishing
 
