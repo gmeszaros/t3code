@@ -296,7 +296,7 @@ function ensureMacIconIcns(runtimeDir) {
   }
 }
 
-function resolveMacBundleInfoPlistStrings(executableName) {
+export function resolveMacBundleInfoPlistStrings(executableName) {
   return {
     CFBundleDisplayName: APP_DISPLAY_NAME,
     CFBundleName: APP_DISPLAY_NAME,
