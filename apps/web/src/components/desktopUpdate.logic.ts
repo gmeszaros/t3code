@@ -62,7 +62,12 @@ export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
   if (isLocalDesktopVersion(state.currentVersion)) {
-    return state.status === "available" && state.availableVersion ? "release" : "none";
+    if (state.downloadedVersion) return "none";
+    return (state.status === "available" ||
+      (state.status === "error" && state.errorContext === "download")) &&
+      state.availableVersion
+      ? "download"
+      : "none";
   }
   if (
     state.downloadedVersion &&
@@ -88,7 +93,12 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return state?.status === "downloading";
+  return (
+    state?.status === "downloading" ||
+    (state !== null &&
+      isLocalDesktopVersion(state.currentVersion) &&
+      state.downloadedVersion !== null)
+  );
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -108,7 +118,12 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
   if (isLocalDesktopVersion(state.currentVersion) && state.status === "available") {
-    return `Local ${state.availableVersion} available. Click to open the release and download it.`;
+    return `Local ${state.availableVersion} available. Click to prepare the update in the background.`;
+  }
+  if (isLocalDesktopVersion(state.currentVersion) && state.downloadedVersion) {
+    if (state.errorContext === "install")
+      return `Local update could not be installed: ${state.message ?? "Installation failed"}. Quit and reopen to retry.`;
+    return `Local ${state.downloadedVersion} prepared. Quit and reopen the app to install it.`;
   }
   if (
     state.notAppliedVersion !== undefined &&
@@ -166,7 +181,10 @@ export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateAction
 export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   if (!state || !state.enabled) return false;
   return (
-    state.status !== "checking" && state.status !== "downloading" && state.status !== "disabled"
+    state.status !== "checking" &&
+    state.status !== "downloading" &&
+    state.status !== "disabled" &&
+    !(isLocalDesktopVersion(state.currentVersion) && state.downloadedVersion !== null)
   );
 }
 

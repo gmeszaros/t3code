@@ -9,17 +9,28 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { createClerkBridgeMock, requestSingleInstanceLockMock, storageAdapter, storageMock } =
-  vi.hoisted(() => ({
-    createClerkBridgeMock: vi.fn(),
-    requestSingleInstanceLockMock: vi.fn(() => true),
-    storageAdapter: {
-      getItem: vi.fn(),
-      setItem: vi.fn(),
-      removeItem: vi.fn(),
-    },
-    storageMock: vi.fn(),
-  }));
+const {
+  createClerkBridgeMock,
+  requestSingleInstanceLockMock,
+  applyUpdateMock,
+  storageAdapter,
+  storageMock,
+} = vi.hoisted(() => ({
+  createClerkBridgeMock: vi.fn(),
+  applyUpdateMock: vi.fn(() => false),
+  requestSingleInstanceLockMock: vi.fn(() => true),
+  storageAdapter: {
+    getItem: vi.fn(),
+    setItem: vi.fn(),
+    removeItem: vi.fn(),
+  },
+  storageMock: vi.fn(),
+}));
+
+vi.mock("../updates/LocalUpdateStaging.ts", () => ({
+  applyPendingLocalUpdate: applyUpdateMock,
+  localAppPath: () => "/test/T3 Code (Local).app",
+}));
 
 vi.mock("@clerk/electron", () => ({
   createClerkBridge: createClerkBridgeMock,
@@ -58,10 +69,16 @@ const layerDesktopClerk = (
     copyText: () => Effect.void,
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
+  isLocalBuild = false,
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
     isDevelopment,
+    isLocalBuild,
+    isPackaged: !isDevelopment,
+    baseDir: "/test/profile",
+    resourcesPath: "/test/resources",
+    appVersion: "0.1.2-local.1.1",
     appDataDirectory: "/tmp/app-data",
     platform,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
@@ -75,6 +92,14 @@ const layerDesktopClerk = (
       events.push("requestSingleInstanceLock");
       return requestSingleInstanceLockMock();
     }),
+    relaunch: () =>
+      Effect.sync(() => {
+        events.push("relaunch");
+      }),
+    exit: () =>
+      Effect.sync(() => {
+        events.push("exit");
+      }),
     quit: Effect.sync(() => {
       events.push("quit");
     }),
@@ -107,6 +132,7 @@ const layerDesktopClerk = (
 describe("DesktopClerk", () => {
   beforeEach(() => {
     createClerkBridgeMock.mockReset();
+    applyUpdateMock.mockReset().mockReturnValue(false);
     requestSingleInstanceLockMock.mockReset().mockReturnValue(true);
     storageMock.mockReset();
   });
@@ -250,6 +276,58 @@ describe("DesktopClerk", () => {
       ),
     );
   });
+
+  it.effect("applies a staged Local update after the lock and exits before starting sessions", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      applyUpdateMock.mockImplementation(() => {
+        events.push("applyUpdate");
+        return true;
+      });
+      const runtime = layerDesktopClerk(
+        false,
+        events,
+        "darwin",
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ).pipe(
+        Layer.flatMap(() =>
+          Layer.effectDiscard(
+            Effect.sync(() => {
+              events.push("startSessions");
+            }),
+          ),
+        ),
+      );
+      const exit = yield* Effect.exit(Effect.scoped(Layer.build(runtime)));
+      assert.isTrue(Exit.hasInterrupts(exit));
+      assert.deepEqual(events, [
+        "setPath:userData:/tmp/app-data/t3code-local",
+        "requestSingleInstanceLock",
+        "applyUpdate",
+        "relaunch",
+        "exit",
+      ]);
+      assert.equal(createClerkBridgeMock.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("does not touch a pending update while another instance owns the profile", () =>
+    Effect.gen(function* () {
+      requestSingleInstanceLockMock.mockReturnValueOnce(false);
+      const exit = yield* Effect.exit(
+        Effect.scoped(
+          Layer.build(
+            layerDesktopClerk(false, [], "darwin", undefined, undefined, undefined, true),
+          ),
+        ),
+      );
+      assert.isTrue(Exit.hasInterrupts(exit));
+      assert.equal(applyUpdateMock.mock.calls.length, 0);
+    }),
+  );
 
   it.effect.each(["darwin", "win32", "linux"] as const)(
     "quits a second launch before initializing Clerk or the application runtime on %s",

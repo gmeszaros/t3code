@@ -4,6 +4,7 @@ import { ArrowRightIcon } from "lucide-react";
 import {
   getDesktopUpdateDownloadedVersion,
   getDesktopUpdateReleaseUrl,
+  isLocalDesktopVersion,
 } from "./desktopUpdate.logic";
 import { toastManager } from "./ui/toast";
 
@@ -54,7 +55,9 @@ export function showDesktopUpdateDownloadedToast(
     title: "Update downloaded",
     description: (
       <>
-        Restart the app from the update button to install it.
+        {isLocalDesktopVersion(state.currentVersion)
+          ? "Update prepared. Quit and reopen the app when convenient to install it."
+          : "Restart the app from the update button to install it."}
         {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
       </>
     ),

@@ -21,6 +21,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
+import { applyPendingLocalUpdate, localAppPath } from "../updates/LocalUpdateStaging.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -110,6 +111,31 @@ export const make = Effect.gen(function* () {
   if (!(yield* electronApp.requestSingleInstanceLock)) {
     yield* electronApp.quit;
     return yield* Effect.interrupt;
+  }
+
+  // The profile lock prevents replacing a bundle while another instance owns its sessions.
+  if (
+    environment.isLocalBuild &&
+    environment.isPackaged &&
+    !environment.isDevelopment &&
+    environment.platform === "darwin"
+  ) {
+    const applied = yield* Effect.try(() =>
+      applyPendingLocalUpdate(
+        environment.baseDir,
+        localAppPath(environment.resourcesPath),
+        environment.appVersion,
+      ),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Local update could not be applied", error).pipe(Effect.as(false)),
+      ),
+    );
+    if (applied) {
+      yield* electronApp.relaunch({ execPath: process.execPath });
+      yield* electronApp.exit(0);
+      return yield* Effect.interrupt;
+    }
   }
 
   // Retain launch arguments while asynchronous startup builds the application runtime.

@@ -100,8 +100,8 @@ Local update, candidate branch, tag or draft release for inspection; inspect tho
 before retrying. Existing releases are never overwritten.
 
 Further feature work starts from the updated `local`; its original feature commits
-remain in history. Download and install remain manual; the app does not dispatch
-this workflow yet.
+remain in history. The app can prepare a published Local update; it does not dispatch
+this workflow.
 
 GitHub requires a dispatchable workflow to exist on the default branch. The fork uses `local` as that default so `main` can remain identical to upstream. Preserve this setting when maintaining the workflows. No PAT, signing secret or self-hosted runner is required.
 
@@ -121,7 +121,7 @@ Alternatively, after merging the reviewed change and approving release publicati
 
 Local packaging remains available as a fallback with `node scripts/build-local-desktop.mjs --output-dir release-local`. If publishing that output manually, upload both the versioned ZIP and its `.build.json` to a draft release targeting the manifest's `sourceSha`, then publish it as latest.
 
-Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the release page opens in this repository. Download and installation remain manual.
+Publish it as a normal release, not a prerelease. The Local updater requires the exact versioned ZIP and manifest names, and only checks the latest published release. Verify the tag targets `sourceSha` and the uploaded ZIP digest matches the manifest. Check for updates from an older Local build, then verify the advertised version matches the published release. On macOS arm64, the update button downloads the ZIP in the background, checks its manifest, SHA-256, bundle signature and revision, and stages it beside the installed app. Quit and reopen when convenient: the next launch applies the staged bundle after acquiring the profile lock and before starting sessions, then relaunches the updated app. The previous bundle remains in the staging directory as `previous.app` for rollback. The app directory must be writable. Builds predating this support need one manual installation first.
 
 Keep `CI`, `Mobile Fingerprint Check`, `Local desktop build` and
 `Local upstream update` and `Local upstream integration` enabled as this fork's repository-owned workflows.

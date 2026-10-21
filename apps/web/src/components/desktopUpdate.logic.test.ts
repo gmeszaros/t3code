@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
+import type { DesktopUpdateState } from "@t3tools/contracts";
 
 import {
   canCheckForUpdate,
+  isDesktopUpdateButtonDisabled,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
@@ -29,15 +30,15 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
-  it("opens Local release downloads without offering automated installation", () => {
+  it("prepares Local updates in the background without offering a forced restart", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       currentVersion: "0.0.46-local.3.1",
       availableVersion: "0.0.46-local.4.1",
       status: "available",
     };
-    expect(resolveDesktopUpdateButtonAction(state)).toBe("release");
-    expect(getDesktopUpdateButtonTooltip(state)).toContain("open the release");
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("download");
+    expect(getDesktopUpdateButtonTooltip(state)).toContain("prepare the update in the background");
     expect(getDesktopUpdateReleaseUrl(state.availableVersion)).toBe(
       "https://github.com/gmeszaros/t3code/releases/tag/v0.0.46-local.4.1",
     );
@@ -52,6 +53,19 @@ describe("desktop update button state", () => {
       }),
     ).toBe("none");
   });
+  it("keeps a prepared Local update visible without offering another download or a forced restart", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      currentVersion: "0.1.2-local.1.1",
+      downloadedVersion: "0.1.2-local.2.1",
+      status: "downloaded",
+    };
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("none");
+    expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
+    expect(getDesktopUpdateButtonTooltip(state)).toContain("Quit and reopen");
+    expect(canCheckForUpdate(state)).toBe(false);
+  });
+
   it("shows a download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,
