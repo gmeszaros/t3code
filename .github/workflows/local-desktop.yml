@@ -73,7 +73,10 @@ jobs:
 
       - name: Verify Local update link and favorite reordering
         working-directory: apps/web
-        run: vp test run src/components/desktopUpdate.logic.test.ts src/components/SortableOrder.test.tsx src/components/chat/ModelPickerContent.test.ts --project unit
+        run: |
+          vp test run src/components/desktopUpdate.logic.test.ts src/components/chat/modelPickerKeys.test.ts src/components/chat/modelPickerSearch.test.ts --project unit
+          node node_modules/playwright/cli.js install --only-shell chromium
+          vp test run src/components/SortableOrder.browser.test.tsx --project browser
 
       - name: Build and verify self-contained Local app
         shell: bash
