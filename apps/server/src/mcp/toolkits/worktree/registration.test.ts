@@ -19,6 +19,7 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ResetCreditRequests from "../../../provider/ResetCreditRequests.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
@@ -85,7 +86,8 @@ const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const layerRoutes = McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer));
+      const registryService = yield* McpSessionRegistry.McpSessionRegistry;
+      const layerRoutes = McpHttpServer.layer;
       yield* HttpRouter.serve(layerRoutes, {
         disableListenLog: true,
         disableLogger: true,
@@ -98,10 +100,11 @@ it.effect("production mcp layer lists worktree tools over http", () =>
         Layer.provide(PreviewAutomationBroker.layer),
         Layer.provide(PreviewBrowser.layer),
         Layer.provide(layerStubServices),
+        Layer.provide(McpProviderSessions.layer),
         Layer.build,
       );
 
-      const registry = McpSessionRegistry.issueActiveMcpCredential({
+      const registry = registryService.issue({
         threadId: ThreadId.make("thread-scratch"),
         providerInstanceId: ProviderInstanceId.make("claudeAgent"),
       });
@@ -160,6 +163,15 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       }
     }),
   ).pipe(
+    Effect.provide(
+      McpSessionRegistry.layer.pipe(
+        Layer.provide(
+          Layer.mock(ServerEnvironment.ServerEnvironment)({
+            getEnvironmentId: Effect.succeed("environment-scratch" as never),
+          }),
+        ),
+      ),
+    ),
     Effect.provide(
       Layer.mergeAll(
         NodeHttpServer.layerTest,

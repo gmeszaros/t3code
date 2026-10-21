@@ -43,7 +43,9 @@ jobs:
           git fetch --no-tags upstream main
           git fetch --no-tags origin main
           git merge-base --is-ancestor origin/main upstream/main
-          git push origin refs/remotes/upstream/main:refs/heads/main
+          gh api --method POST "repos/$GH_REPO/merge-upstream" -f branch=main
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor upstream/main origin/main
 
       - name: Prepare one bounded integration
         id: candidate
@@ -62,22 +64,28 @@ jobs:
             exit 0
           fi
           branch="updates/upstream-$target"
-          # A prior partial run may have pushed the branch before PR creation failed.
-          if git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
-            git fetch --no-tags origin "refs/heads/$branch"
-            git checkout --detach FETCH_HEAD
-            git merge-base --is-ancestor "$LOCAL_SHA" HEAD
-            git merge-base --is-ancestor "$target" HEAD
-          else
-            base="$(git merge-base "$LOCAL_SHA" "$target")"
-            git config user.name github-actions
-            git config user.email github-actions@users.noreply.github.com
-            if ! node scripts/merge-local-update.mjs --local "$LOCAL_SHA" --base "$base" --upstream "$target"; then
-              echo "Upstream integration conflicts at $target. Resolve this batch manually; no branch or PR was published." >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-            git push origin "HEAD:refs/heads/$branch"
+          base="$(git merge-base "$LOCAL_SHA" "$target")"
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          if ! node scripts/merge-local-update.mjs --local "$LOCAL_SHA" --base "$base" --upstream "$target"; then
+            echo "Upstream integration conflicts at $target. Resolve this batch manually; no branch or PR was published." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
+          expected_tree="$(git rev-parse 'HEAD^{tree}')"
+          # Create the ref at existing Local history, then merge through GitHub.
+          # Git pushes containing upstream workflow changes reject GITHUB_TOKEN.
+          if ! git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$LOCAL_SHA"
+          fi
+          git fetch --no-tags origin "refs/heads/$branch"
+          if ! git merge-base --is-ancestor "$target" FETCH_HEAD; then
+            test "$(git rev-parse FETCH_HEAD)" = "$LOCAL_SHA"
+            gh api --method POST "repos/$GH_REPO/merges" -f base="$branch" -f head="$target" -f commit_message="chore(local): integrate upstream through ${target:0:10}"
+            git fetch --no-tags origin "refs/heads/$branch"
+          fi
+          git merge-base --is-ancestor "$LOCAL_SHA" FETCH_HEAD
+          git merge-base --is-ancestor "$target" FETCH_HEAD
+          test "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$expected_tree"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "target=$target" >> "$GITHUB_OUTPUT"
 

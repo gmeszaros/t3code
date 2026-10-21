@@ -20,9 +20,10 @@ Create feature worktrees from the latest hosted `local` and open feature PRs aga
 
 The `Local upstream integration` workflow checks upstream main every six hours
 (at minute 17 UTC) and can also be dispatched manually. It fast-forwards the
-fork's clean `main`, then prepares at most 25 first-parent commits beyond the
+fork's clean `main` through GitHub's fork-sync API, then prepares at most 25 first-parent commits beyond the
 last integrated upstream boundary. Upstream merge commits stay intact and may
-contain more commits internally. It opens one draft integration PR against
+contain more commits internally. It creates the candidate through GitHub's branch and merge APIs and checks its
+tree against the prepared local merge. It opens one draft integration PR against
 `local` and explicitly dispatches CI for its exact branch using the short-lived
 GitHub token. No PAT is required. Enable Actions to create pull requests in the
 repository's Actions settings before enabling this workflow.
