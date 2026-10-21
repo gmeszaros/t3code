@@ -62,9 +62,10 @@ jobs:
         id: candidate
         env:
           GH_TOKEN: ${{ steps.sync-token.outputs.token }}
+          PR_READ_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          pending="$(gh pr list --base local --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("updates/upstream-"))] | length')"
+          pending="$(GH_TOKEN="$PR_READ_TOKEN" gh pr list --base local --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("updates/upstream-"))] | length')"
           if [[ "$pending" != 0 ]]; then
             echo 'An upstream integration PR is already open; retaining its exact revision.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
