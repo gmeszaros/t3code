@@ -7,6 +7,7 @@ import {
   MessageId,
   NodeId,
   ORCHESTRATION_V2_WS_METHODS,
+  PlanId,
   ProjectId,
   ProviderInstanceId,
   ProviderDriverKind,
