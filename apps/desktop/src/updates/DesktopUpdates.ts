@@ -36,6 +36,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import * as LocalReleaseUpdates from "./LocalReleaseUpdates.ts";
+import { localAppPath, readPendingLocalUpdate, stageLocalUpdate } from "./LocalUpdateStaging.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -348,6 +349,9 @@ export const make = Effect.gen(function* () {
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   if (environment.isLocalBuild && environment.isPackaged && !environment.isDevelopment) {
+    const pending = yield* Effect.try(() =>
+      readPendingLocalUpdate(environment.baseDir, localAppPath(environment.resourcesPath)),
+    ).pipe(Effect.orElseSucceed(() => null));
     return yield* LocalReleaseUpdates.make(
       {
         ...createInitialDesktopUpdateState(
@@ -362,6 +366,27 @@ export const make = Effect.gen(function* () {
           : null,
       },
       (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
+      environment.platform === "darwin" && environment.processArch === "arm64"
+        ? {
+            pendingVersion: pending?.version ?? null,
+            pendingError: pending?.error,
+            stage: (version) =>
+              Effect.tryPromise((signal) =>
+                stageLocalUpdate({
+                  baseDir: environment.baseDir,
+                  appPath: localAppPath(environment.resourcesPath),
+                  currentVersion: environment.appVersion,
+                  version,
+                  signal,
+                }),
+              ).pipe(
+                Effect.timeout("15 minutes"),
+                Effect.mapError(
+                  (cause) => new LocalReleaseUpdates.LocalUpdatePreparationError({ cause }),
+                ),
+              ),
+          }
+        : undefined,
     );
   }
 

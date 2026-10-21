@@ -20,6 +20,7 @@ import {
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   getDesktopUpdateReleaseUrl,
+  isLocalDesktopVersion,
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
@@ -225,7 +226,11 @@ function SidebarUpdateControl() {
       ? getDesktopUpdateDownloadedVersion(state)
       : null;
   const everything = useUpdateEverything(localUpdateVersion);
-  const runsEverything = everything.hasUpdates && !isDownloading && action !== "release";
+  const runsEverything =
+    everything.hasUpdates &&
+    !isDownloading &&
+    action !== "release" &&
+    !(state?.downloadedVersion && isLocalDesktopVersion(state.currentVersion));
   // Providers leave the list once queued, so the run keeps its own state.
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
@@ -234,13 +239,17 @@ function SidebarUpdateControl() {
     isChecking: state?.status === "checking",
     prefersReducedMotion,
   });
-  const { iconStatus, showUpdateDetails, showUpdateIconState } = resolveSidebarUpdatePresentation({
+  const isPrepared = !!state?.downloadedVersion && isLocalDesktopVersion(state.currentVersion);
+  const presentation = resolveSidebarUpdatePresentation({
     action,
     showsEverything: runsEverything,
     run,
     isDownloading,
     showCheckIcon,
   });
+  const iconStatus = isPrepared ? "downloaded" : presentation.iconStatus;
+  const showUpdateDetails = isPrepared || presentation.showUpdateDetails;
+  const showUpdateIconState = isPrepared || presentation.showUpdateIconState;
   const idleTooltip =
     !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
   const tooltip = runsEverything
