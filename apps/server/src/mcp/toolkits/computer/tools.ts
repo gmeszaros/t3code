@@ -204,8 +204,11 @@ export function computerToolResult(result: ComputerDesktopResponse["result"], in
   });
 }
 
-const handle = (definition: (typeof definitions)[number], payload: unknown) =>
-  Effect.gen(function* () {
+const handle = Effect.fn("tools.handle")(function* (
+  definition: (typeof definitions)[number],
+  payload: unknown,
+) {
+  return yield* Effect.gen(function* () {
     const scope = yield* McpInvocationContext;
     const desktop = yield* DesktopComputerClient;
     const projection = yield* ProjectionStoreV2;
@@ -252,6 +255,7 @@ const handle = (definition: (typeof definitions)[number], payload: unknown) =>
       Effect.succeed(computerToolResult({ kind: "unavailable", reason: "worker-failed" })),
     ),
   );
+});
 
 export const layer = McpToolAccess.toLayer(ComputerToolkit, {
   computer_access_status: McpToolAccess.readsAsCaller((input) => handle(definitions[0], input)),

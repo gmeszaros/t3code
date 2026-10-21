@@ -779,74 +779,74 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           })),
       ),
     );
-  const nativeLifecycle: PreviewAutomationBroker["Service"]["nativeLifecycle"] = (input) =>
-    Effect.gen(function* () {
-      const targets = yield* SynchronizedRef.get(state).pipe(
-        Effect.map((current) =>
-          [...current.pending].filter(
-            ([, entry]) =>
-              entry.context.threadId === input.scope.thread.threadId &&
-              (input.host === undefined || entry.context.connectionId === input.host.id) &&
-              entry.context.providerSessionId === input.scope.thread.providerSessionId &&
-              entry.context.environmentId === input.scope.environmentId &&
-              (input.kind === "closeSession" ||
-                (input.kind === "cancelRequest"
-                  ? entry.nativeRequestId === input.targetRequestId
-                  : input.nativeTurnId === undefined || entry.nativeTurnId === input.nativeTurnId)),
-          ),
+  const nativeLifecycle: PreviewAutomationBroker["Service"]["nativeLifecycle"] = Effect.fn(
+    "PreviewAutomationBroker.nativeLifecycle",
+  )(function* (input) {
+    const targets = yield* SynchronizedRef.get(state).pipe(
+      Effect.map((current) =>
+        [...current.pending].filter(
+          ([, entry]) =>
+            entry.context.threadId === input.scope.thread.threadId &&
+            (input.host === undefined || entry.context.connectionId === input.host.id) &&
+            entry.context.providerSessionId === input.scope.thread.providerSessionId &&
+            entry.context.environmentId === input.scope.environmentId &&
+            (input.kind === "closeSession" ||
+              (input.kind === "cancelRequest"
+                ? entry.nativeRequestId === input.targetRequestId
+                : input.nativeTurnId === undefined || entry.nativeTurnId === input.nativeTurnId)),
         ),
-      );
-      yield* SynchronizedRef.modifyEffect(state, (current) => {
-        const pending = new Map(current.pending);
-        const canceled: PendingRequest[] = [];
-        for (const [id, entry] of pending) {
-          if (
-            entry.context.providerSessionId !== input.scope.thread.providerSessionId ||
-            entry.context.environmentId !== input.scope.environmentId
-          )
-            continue;
-          if (!targets.some(([targetId]) => targetId === id)) continue;
-          pending.delete(id);
-          canceled.push(entry);
-        }
-        const assignments = new Map(current.assignments);
-        const assignmentKey = hostAssignmentKey(input.scope);
+      ),
+    );
+    yield* SynchronizedRef.modifyEffect(state, (current) => {
+      const pending = new Map(current.pending);
+      const canceled: PendingRequest[] = [];
+      for (const [id, entry] of pending) {
         if (
-          input.kind === "closeSession" &&
-          (input.host === undefined ||
-            assignments.get(assignmentKey)?.connectionId === input.host.id)
+          entry.context.providerSessionId !== input.scope.thread.providerSessionId ||
+          entry.context.environmentId !== input.scope.environmentId
         )
-          assignments.delete(assignmentKey);
-        return Effect.forEach(
-          canceled,
-          (entry) =>
-            Deferred.fail(
-              entry.deferred,
-              new PreviewAutomationControlInterruptedError({
-                ...entry.context,
-                reason: "interrupted",
-                remoteTag: "PreviewAutomationControlInterruptedError",
-                remoteMessageLength: 0,
-                cause: undefined,
-              }),
-            ),
-          { discard: true },
-        ).pipe(Effect.as([undefined, { ...current, pending, assignments }] as const));
-      });
-      yield* invoke({
-        ...input,
-        beforeDispatch: undefined,
-        nativeRequestId: undefined,
-        nativeTurnId: undefined,
-        operation: "releaseAgent",
-        input: {
-          requestIds: targets.filter(([, entry]) => entry.delivered).map(([id]) => id),
-          closeSession: input.kind === "closeSession",
-          closeTabs: input.closeTabs ?? false,
-        },
-        updateCurrentTab: false,
-      });
+          continue;
+        if (!targets.some(([targetId]) => targetId === id)) continue;
+        pending.delete(id);
+        canceled.push(entry);
+      }
+      const assignments = new Map(current.assignments);
+      const assignmentKey = hostAssignmentKey(input.scope);
+      if (
+        input.kind === "closeSession" &&
+        (input.host === undefined || assignments.get(assignmentKey)?.connectionId === input.host.id)
+      )
+        assignments.delete(assignmentKey);
+      return Effect.forEach(
+        canceled,
+        (entry) =>
+          Deferred.fail(
+            entry.deferred,
+            new PreviewAutomationControlInterruptedError({
+              ...entry.context,
+              reason: "interrupted",
+              remoteTag: "PreviewAutomationControlInterruptedError",
+              remoteMessageLength: 0,
+              cause: undefined,
+            }),
+          ),
+        { discard: true },
+      ).pipe(Effect.as([undefined, { ...current, pending, assignments }] as const));
     });
+    yield* invoke({
+      ...input,
+      beforeDispatch: undefined,
+      nativeRequestId: undefined,
+      nativeTurnId: undefined,
+      operation: "releaseAgent",
+      input: {
+        requestIds: targets.filter(([, entry]) => entry.delivered).map(([id]) => id),
+        closeSession: input.kind === "closeSession",
+        closeTabs: input.closeTabs ?? false,
+      },
+      updateCurrentTab: false,
+    });
+  });
   return PreviewAutomationBroker.of({
     connect,
     focusHost,

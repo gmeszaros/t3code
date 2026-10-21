@@ -186,28 +186,29 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       ).pipe(Effect.as([undefined, { records: next }] as const));
     });
 
-  const awaitRevocation = (rawToken: string) =>
-    Effect.gen(function* () {
-      const hash = yield* hashToken(rawToken);
-      const waiter = yield* Deferred.make<void>();
-      yield* SynchronizedRef.modifyEffect(state, (current) => {
-        if (!current.records.has(hash))
-          return Deferred.succeed(waiter, undefined).pipe(Effect.as([undefined, current] as const));
-        const waiters = revocationWaiters.get(hash) ?? new Set();
-        waiters.add(waiter);
-        revocationWaiters.set(hash, waiters);
-        return Effect.succeed([undefined, current] as const);
-      });
-      yield* Deferred.await(waiter).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            const waiters = revocationWaiters.get(hash);
-            waiters?.delete(waiter);
-            if (waiters?.size === 0) revocationWaiters.delete(hash);
-          }),
-        ),
-      );
+  const awaitRevocation = Effect.fn("McpSessionRegistry.awaitRevocation")(function* (
+    rawToken: string,
+  ) {
+    const hash = yield* hashToken(rawToken);
+    const waiter = yield* Deferred.make<void>();
+    yield* SynchronizedRef.modifyEffect(state, (current) => {
+      if (!current.records.has(hash))
+        return Deferred.succeed(waiter, undefined).pipe(Effect.as([undefined, current] as const));
+      const waiters = revocationWaiters.get(hash) ?? new Set();
+      waiters.add(waiter);
+      revocationWaiters.set(hash, waiters);
+      return Effect.succeed([undefined, current] as const);
     });
+    yield* Deferred.await(waiter).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          const waiters = revocationWaiters.get(hash);
+          waiters?.delete(waiter);
+          if (waiters?.size === 0) revocationWaiters.delete(hash);
+        }),
+      ),
+    );
+  });
 
   return McpSessionRegistry.of({
     issue,

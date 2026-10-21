@@ -48,6 +48,9 @@ describe("runMigrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         [64, "DropUnusedV1Projections"],
         [65, "CanonicalizeThreadPullRequestLinks"],
+        [66, "CodexUsageNativeTurnIndex"],
+        [67, "RepairClientSettlementTimestamps"],
+        [68, "WebhookDedupe"],
       ]);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.deepStrictEqual(

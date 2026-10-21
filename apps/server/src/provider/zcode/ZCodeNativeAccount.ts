@@ -139,21 +139,22 @@ export const makeZCodeNativeAccountReader = Effect.fn("makeZCodeNativeAccountRea
   const credentialSecret =
     environment.ZCODE_CREDENTIAL_SECRET?.trim() ||
     `zcode-credential-fallback:${platform}:${home}:${NodeOS.userInfo().username}`;
-  const readCredentialValues = (names: readonly string[]) =>
-    Effect.gen(function* () {
-      const store = yield* decodeStore(yield* fs.readFileString(credentialsPath));
-      return yield* Effect.try(
-        () =>
-          Object.fromEntries(
-            names.map((name) => [
-              name,
-              store[name] === undefined
-                ? undefined
-                : decryptZCodeCredential(store[name]!, credentialSecret).trim(),
-            ]),
-          ) as Record<string, string | undefined>,
-      );
-    });
+  const readCredentialValues = Effect.fn("ZCodeNativeAccount.readCredentialValues")(function* (
+    names: readonly string[],
+  ) {
+    const store = yield* decodeStore(yield* fs.readFileString(credentialsPath));
+    return yield* Effect.try(
+      () =>
+        Object.fromEntries(
+          names.map((name) => [
+            name,
+            store[name] === undefined
+              ? undefined
+              : decryptZCodeCredential(store[name]!, credentialSecret).trim(),
+          ]),
+        ) as Record<string, string | undefined>,
+    );
+  });
   const readKey = Effect.gen(function* () {
     const store = yield* decodeStore(yield* fs.readFileString(credentialsPath));
     return yield* Effect.try(() => {
@@ -170,14 +171,14 @@ export const makeZCodeNativeAccountReader = Effect.fn("makeZCodeNativeAccountRea
       return value ? Redacted.make(value) : undefined;
     });
   }).pipe(Effect.orElseSucceed(() => undefined));
-  const requestAuthHeaders = (
+  const requestAuthHeaders = Effect.fn("ZCodeNativeAccount.requestAuthHeaders")(function* (
     destinationOrigin: string,
     mode: "mcp" | "reset" = "mcp",
     expectedProfileId?: string,
-  ): Effect.Effect<ZCodeSchema.RequestOfficialMcpAuthHeadersResult> =>
-    Effect.gen(function* () {
-      const readSnapshot = () =>
-        Effect.gen(function* () {
+  ): Effect.fn.Return<ZCodeSchema.RequestOfficialMcpAuthHeadersResult> {
+    return yield* Effect.gen(function* () {
+      const readSnapshot = Effect.fn("ZCodeNativeAccount.readSnapshot")(function* () {
+        return yield* Effect.gen(function* () {
           const [rawSettings, values, rawSelection] = yield* Effect.all(
             [
               fs.readFileString(settingsPath),
@@ -226,6 +227,7 @@ export const makeZCodeNativeAccountReader = Effect.fn("makeZCodeNativeAccountRea
             maasJwt,
           };
         }).pipe(Effect.orElseSucceed(() => undefined));
+      });
 
       const current = yield* readSnapshot();
       if (!current) return accountAuthFailure("official_auth_unavailable");
@@ -282,14 +284,15 @@ export const makeZCodeNativeAccountReader = Effect.fn("makeZCodeNativeAccountRea
         },
       };
     }).pipe(Effect.orElseSucceed(() => accountAuthFailure("official_auth_unavailable")));
+  });
 
   const officialMcpAuthHeaders = (params: ZCodeSchema.RequestOfficialMcpAuthHeadersParams) =>
     requestAuthHeaders(params.targetOrigin);
   const resetAuthHeaders = (profileId: string) =>
     requestAuthHeaders(DEFAULT_ZCODE_ORIGIN, "reset", profileId);
 
-  const readAccount = (catalogPath: string) =>
-    Effect.gen(function* () {
+  const readAccount = Effect.fn("ZCodeNativeAccount.readAccount")(function* (catalogPath: string) {
+    return yield* Effect.gen(function* () {
       const selected = yield* decodeSelection(yield* fs.readFileString(personalConfigPath));
       if (selected.config.defaultModelSelection?.providerId !== providerId || !(yield* readKey))
         return undefined;
@@ -304,28 +307,30 @@ export const makeZCodeNativeAccountReader = Effect.fn("makeZCodeNativeAccountRea
           providers: { [providerId]: { access: { type: "zhipu-account", entitled: true } } },
           states: { [providerId]: { availability: "available", entitled: true, current: true } },
         },
-        runtimeHeaders: (params: Record<string, unknown>) =>
-          Effect.gen(function* () {
-            const access = params.accountAccess as { mode?: unknown } | undefined;
-            const selection = params.modelSelection as { providerId?: unknown } | undefined;
-            if (
-              params.providerId !== providerId ||
-              selection?.providerId !== providerId ||
-              access?.mode !== "individual-coding-plan"
-            ) {
-              return {
-                headersApplied: false,
-                errorMessage: "Native account request does not match the configured account",
-              };
-            }
-            const key = yield* readKey;
-            return key
-              ? { headersApplied: true, requestAuth: { apiKey: Redacted.value(key) } }
-              : { headersApplied: false, errorMessage: "Native account credential is unavailable" };
-          }),
+        runtimeHeaders: Effect.fn("ZCodeNativeAccount.runtimeHeaders")(function* (
+          params: Record<string, unknown>,
+        ) {
+          const access = params.accountAccess as { mode?: unknown } | undefined;
+          const selection = params.modelSelection as { providerId?: unknown } | undefined;
+          if (
+            params.providerId !== providerId ||
+            selection?.providerId !== providerId ||
+            access?.mode !== "individual-coding-plan"
+          ) {
+            return {
+              headersApplied: false,
+              errorMessage: "Native account request does not match the configured account",
+            };
+          }
+          const key = yield* readKey;
+          return key
+            ? { headersApplied: true, requestAuth: { apiKey: Redacted.value(key) } }
+            : { headersApplied: false, errorMessage: "Native account credential is unavailable" };
+        }),
         officialMcpAuthHeaders,
       };
     }).pipe(Effect.orElseSucceed(() => undefined));
+  });
   return Object.assign(readAccount, { officialMcpAuthHeaders, resetAuthHeaders });
 });
 

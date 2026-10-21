@@ -176,11 +176,10 @@ export const makeClientFromHandle = Effect.fn("t3-provider-zcode-makeClient")(fu
           stderr: () => Stream.drain as never,
         }),
     terminationError,
-    onTermination: (error) =>
-      Effect.gen(function* () {
-        if (options.onBrowserTermination) yield* options.onBrowserTermination();
-        if (options.onTermination) yield* options.onTermination(error);
-      }),
+    onTermination: Effect.fn("ZCodeAppServerClient.onTermination")(function* (error) {
+      if (options.onBrowserTermination) yield* options.onBrowserTermination();
+      if (options.onTermination) yield* options.onTermination(error);
+    }),
     ...(options.logger ? { logger: options.logger } : {}),
     onNotification: (notification) => {
       if (options.onSessionEvent === undefined) {

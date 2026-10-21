@@ -311,413 +311,398 @@ export const layer = Layer.effect(
     const sessions = yield* McpProviderSessions;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     return ZCodeBrowserBridge.of({
-      bind: (binding) =>
-        Effect.gen(function* () {
-          const credential = yield* sessions.read(binding.threadId);
-          let closed = false;
-          let released = false;
-          const discovered = new Map<string, Host>();
-          const inFlight = new Set<string>();
-          const canceled = new Set<string>();
-          const endedTurns = new Set<string>();
-          const lifecycleResults = new Map<
-            string,
-            Deferred.Deferred<Browser.BrowserExecuteResult>
-          >();
-          let cleanupScope: McpInvocationContext.McpThreadInvocationScope | undefined;
-          const scopeFor = Effect.gen(function* () {
-            const current = yield* sessions.read(binding.threadId);
-            if (
-              !credential ||
-              !current ||
-              current.providerSessionId !== credential.providerSessionId ||
-              current.authorizationHeader !== credential.authorizationHeader
-            )
-              return undefined;
-            const scope = yield* registry.resolve(
-              current.authorizationHeader.replace(/^Bearer /, ""),
+      bind: Effect.fn("ZCodeBrowserBridge.bind")(function* (binding) {
+        const credential = yield* sessions.read(binding.threadId);
+        let closed = false;
+        let released = false;
+        const discovered = new Map<string, Host>();
+        const inFlight = new Set<string>();
+        const canceled = new Set<string>();
+        const endedTurns = new Set<string>();
+        const lifecycleResults = new Map<string, Deferred.Deferred<Browser.BrowserExecuteResult>>();
+        let cleanupScope: McpInvocationContext.McpThreadInvocationScope | undefined;
+        const scopeFor = Effect.gen(function* () {
+          const current = yield* sessions.read(binding.threadId);
+          if (
+            !credential ||
+            !current ||
+            current.providerSessionId !== credential.providerSessionId ||
+            current.authorizationHeader !== credential.authorizationHeader
+          )
+            return undefined;
+          const scope = yield* registry.resolve(
+            current.authorizationHeader.replace(/^Bearer /, ""),
+          );
+          if (
+            scope?.thread.threadId !== binding.threadId ||
+            scope.thread.providerSessionId !== credential.providerSessionId ||
+            scope.thread.providerInstanceId !== credential.providerInstanceId ||
+            scope.environmentId !== credential.environmentId
+          )
+            return undefined;
+          return yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.orElseSucceed(() => undefined),
+          );
+        });
+        const validate = Effect.fn("ZCodeBrowserBridge.validate")(function* (
+          params: Browser.BrowserExecuteParams | Browser.BrowserListParams,
+          action: boolean,
+          lifecycle = false,
+        ) {
+          const scope = yield* scopeFor;
+          if (
+            !scope ||
+            params.sessionId !== (yield* binding.nativeSessionId) ||
+            params.workspacePath !== binding.workspacePath ||
+            params.workspaceKey !== binding.workspacePath ||
+            params.workspaceIdentity !== undefined ||
+            params.remoteSessionId !== undefined ||
+            params.sessionContext !== "live" ||
+            params.clientMode !== "desktop-continuous"
+          )
+            return undefined;
+          if (!lifecycle) {
+            if (closed) return undefined;
+            const thread = yield* projections
+              .getThreadShell(binding.threadId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (!thread) return undefined;
+            const authorized = yield* assertLiveThread(scope, thread).pipe(
+              Effect.andThen(action ? assertPreviewAction(thread) : Effect.void),
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
             );
-            if (
-              scope?.thread.threadId !== binding.threadId ||
-              scope.thread.providerSessionId !== credential.providerSessionId ||
-              scope.thread.providerInstanceId !== credential.providerInstanceId ||
-              scope.environmentId !== credential.environmentId
-            )
-              return undefined;
-            return yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
-              Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-              Effect.orElseSucceed(() => undefined),
-            );
-          });
-          const validate = (
-            params: Browser.BrowserExecuteParams | Browser.BrowserListParams,
-            action: boolean,
-            lifecycle = false,
-          ) =>
-            Effect.gen(function* () {
-              const scope = yield* scopeFor;
+            if (!authorized) return undefined;
+          }
+          cleanupScope = scope;
+          return scope;
+        });
+        const release = Effect.gen(function* () {
+          if (released) return;
+          released = true;
+          const scope = cleanupScope;
+          closed = true;
+          if (!scope) return;
+          const hosts = [...discovered.values()];
+          yield* Effect.forEach(
+            hosts,
+            (host) =>
+              broker
+                .nativeLifecycle({
+                  scope,
+                  host,
+                  operation: "releaseAgent",
+                  input: {},
+                  kind: "closeSession",
+                  timeoutMs: 1_000,
+                })
+                .pipe(Effect.ignore),
+            { discard: true },
+          );
+        });
+        yield* Effect.addFinalizer(() => release);
+        if (credential)
+          yield* registry
+            .awaitRevocation(credential.authorizationHeader.replace(/^Bearer /, ""))
+            .pipe(Effect.andThen(release), Effect.forkScoped);
+        return {
+          onBrowserTermination: () => release,
+          onBrowserList: Effect.fn("ZCodeBrowserBridge.onBrowserList")(function* (params) {
+            const scope = yield* validate(params, false);
+            if (!scope) return { browsers: [] };
+            const hosts = yield* broker.nativeHosts(scope);
+            for (const host of hosts) discovered.set(host.id, host);
+            return {
+              browsers: hosts.map((host) => ({
+                id: host.id,
+                generation: host.generation,
+                type: "cdp" as const,
+                name: "T3 preview",
+                capabilities: { browser: [], tab: [] },
+                apiSupportOverrides: Object.fromEntries(
+                  Object.entries(nativeApiOperations).map(([api, operation]) => [
+                    api,
+                    operation !== false && host.supportedOperations.includes(operation),
+                  ]),
+                ),
+              })),
+            };
+          }),
+          onBrowserExecute: Effect.fn("ZCodeBrowserBridge.onBrowserExecute")(function* (params) {
+            const startedAt = yield* Clock.currentTimeMillis;
+            const execute = Effect.gen(function* () {
+              const method = params.command.method;
+              const lifecycle =
+                method === "cancelRequest" || method === "turnEnded" || method === "closeSession";
+              const translation = lifecycle ? undefined : translate(params.command);
+              const scope = yield* validate(params, !(translation?.read ?? false), lifecycle);
               if (
-                !scope ||
-                params.sessionId !== (yield* binding.nativeSessionId) ||
-                params.workspacePath !== binding.workspacePath ||
-                params.workspaceKey !== binding.workspacePath ||
-                params.workspaceIdentity !== undefined ||
-                params.remoteSessionId !== undefined ||
-                params.sessionContext !== "live" ||
-                params.clientMode !== "desktop-continuous"
+                lifecycle &&
+                params.command.closeTabs === true &&
+                !(yield* validate(params, true))
               )
-                return undefined;
-              if (!lifecycle) {
-                if (closed) return undefined;
-                const thread = yield* projections
-                  .getThreadShell(binding.threadId)
-                  .pipe(Effect.orElseSucceed(() => null));
-                if (!thread) return undefined;
-                const authorized = yield* assertLiveThread(scope, thread).pipe(
-                  Effect.andThen(action ? assertPreviewAction(thread) : Effect.void),
-                  Effect.as(true),
-                  Effect.orElseSucceed(() => false),
+                return unavailable(
+                  "capability_unsupported",
+                  "Closing native tabs requires live action authority",
                 );
-                if (!authorized) return undefined;
-              }
-              cleanupScope = scope;
-              return scope;
-            });
-          const release = Effect.gen(function* () {
-            if (released) return;
-            released = true;
-            const scope = cleanupScope;
-            closed = true;
-            if (!scope) return;
-            const hosts = [...discovered.values()];
-            yield* Effect.forEach(
-              hosts,
-              (host) =>
-                broker
-                  .nativeLifecycle({
-                    scope,
-                    host,
-                    operation: "releaseAgent",
-                    input: {},
-                    kind: "closeSession",
-                    timeoutMs: 1_000,
-                  })
-                  .pipe(Effect.ignore),
-              { discard: true },
-            );
-          });
-          yield* Effect.addFinalizer(() => release);
-          if (credential)
-            yield* registry
-              .awaitRevocation(credential.authorizationHeader.replace(/^Bearer /, ""))
-              .pipe(Effect.andThen(release), Effect.forkScoped);
-          return {
-            onBrowserTermination: () => release,
-            onBrowserList: (params) =>
-              Effect.gen(function* () {
-                const scope = yield* validate(params, false);
-                if (!scope) return { browsers: [] };
-                const hosts = yield* broker.nativeHosts(scope);
-                for (const host of hosts) discovered.set(host.id, host);
-                return {
-                  browsers: hosts.map((host) => ({
-                    id: host.id,
-                    generation: host.generation,
-                    type: "cdp" as const,
-                    name: "T3 preview",
-                    capabilities: { browser: [], tab: [] },
-                    apiSupportOverrides: Object.fromEntries(
-                      Object.entries(nativeApiOperations).map(([api, operation]) => [
-                        api,
-                        operation !== false && host.supportedOperations.includes(operation),
-                      ]),
-                    ),
-                  })),
-                };
-              }),
-            onBrowserExecute: (params) =>
-              Effect.gen(function* () {
-                const startedAt = yield* Clock.currentTimeMillis;
-                const execute = Effect.gen(function* () {
-                  const method = params.command.method;
-                  const lifecycle =
-                    method === "cancelRequest" ||
-                    method === "turnEnded" ||
-                    method === "closeSession";
-                  const translation = lifecycle ? undefined : translate(params.command);
-                  const scope = yield* validate(params, !(translation?.read ?? false), lifecycle);
+              const host =
+                params.browserId === undefined ? undefined : discovered.get(params.browserId);
+              if (!scope || !host || params.browserGeneration !== host.generation)
+                return unavailable(
+                  "backend_unavailable",
+                  "Native browser scope or generation unavailable",
+                );
+              if (
+                !lifecycle &&
+                (canceled.has(params.requestId) ||
+                  (params.turnId !== undefined && endedTurns.has(params.turnId)))
+              )
+                return unavailable("cancelled", "Native browser request or turn has ended");
+              if (inFlight.has(params.requestId))
+                return unavailable(
+                  "duplicate_request_id",
+                  "Native browser request ID is already pending",
+                );
+              if (lifecycle)
+                return yield* Effect.gen(function* () {
+                  const allowed =
+                    method === "cancelRequest"
+                      ? ["method", "requestId"]
+                      : method === "turnEnded"
+                        ? ["method", "turnId"]
+                        : ["method", "closeTabs"];
                   if (
-                    lifecycle &&
-                    params.command.closeTabs === true &&
-                    !(yield* validate(params, true))
+                    Object.keys(params.command).some((key) => !allowed.includes(key)) ||
+                    (method === "cancelRequest" &&
+                      (typeof params.command.requestId !== "string" ||
+                        params.command.requestId.length === 0)) ||
+                    (method === "turnEnded" &&
+                      (params.turnId === undefined || params.command.turnId !== params.turnId)) ||
+                    (method === "closeSession" &&
+                      params.command.closeTabs !== undefined &&
+                      typeof params.command.closeTabs !== "boolean")
                   )
                     return unavailable(
                       "capability_unsupported",
-                      "Closing native tabs requires live action authority",
+                      "Invalid native lifecycle command",
                     );
-                  const host =
-                    params.browserId === undefined ? undefined : discovered.get(params.browserId);
-                  if (!scope || !host || params.browserGeneration !== host.generation)
-                    return unavailable(
-                      "backend_unavailable",
-                      "Native browser scope or generation unavailable",
-                    );
-                  if (
-                    !lifecycle &&
-                    (canceled.has(params.requestId) ||
-                      (params.turnId !== undefined && endedTurns.has(params.turnId)))
-                  )
-                    return unavailable("cancelled", "Native browser request or turn has ended");
-                  if (inFlight.has(params.requestId))
-                    return unavailable(
-                      "duplicate_request_id",
-                      "Native browser request ID is already pending",
-                    );
-                  if (lifecycle)
-                    return yield* Effect.gen(function* () {
-                      const allowed =
-                        method === "cancelRequest"
-                          ? ["method", "requestId"]
-                          : method === "turnEnded"
-                            ? ["method", "turnId"]
-                            : ["method", "closeTabs"];
-                      if (
-                        Object.keys(params.command).some((key) => !allowed.includes(key)) ||
-                        (method === "cancelRequest" &&
-                          (typeof params.command.requestId !== "string" ||
-                            params.command.requestId.length === 0)) ||
-                        (method === "turnEnded" &&
-                          (params.turnId === undefined ||
-                            params.command.turnId !== params.turnId)) ||
-                        (method === "closeSession" &&
-                          params.command.closeTabs !== undefined &&
-                          typeof params.command.closeTabs !== "boolean")
-                      )
-                        return unavailable(
-                          "capability_unsupported",
-                          "Invalid native lifecycle command",
-                        );
-                      const targetRequestId =
-                        method === "cancelRequest"
-                          ? (params.command.requestId as string)
-                          : undefined;
-                      const key = encodeLifecycleKey([
-                        host.id,
-                        String(host.generation),
-                        method,
-                        method === "closeSession" ? "" : (targetRequestId ?? params.turnId ?? ""),
-                      ]);
-                      const previous = lifecycleResults.get(key);
-                      if (previous) return yield* Deferred.await(previous);
-                      if (closed)
-                        return unavailable(
-                          "backend_unavailable",
-                          "Native browser session has closed",
-                        );
-                      const completion = yield* Deferred.make<Browser.BrowserExecuteResult>();
-                      lifecycleResults.set(key, completion);
-                      if (targetRequestId !== undefined) canceled.add(targetRequestId);
-                      if (method === "turnEnded" && params.turnId !== undefined)
-                        endedTurns.add(params.turnId);
-                      if (method === "closeSession") closed = true;
-                      const cleanup = (target: Host) =>
-                        broker.nativeLifecycle({
-                          scope,
-                          host: target,
-                          operation: "releaseAgent",
-                          input: {},
-                          kind: method,
-                          targetRequestId,
-                          nativeTurnId: params.turnId,
-                          closeTabs: params.command.closeTabs === true,
-                        });
-                      if (method === "closeSession") released = true;
-                      const result = yield* (
-                        method === "closeSession"
-                          ? Effect.forEach([...discovered.values()], (target) =>
-                              cleanup(target).pipe(Effect.result),
-                            ).pipe(
-                              Effect.map((results): Browser.BrowserExecuteResult =>
-                                results.some(Result.isFailure)
-                                  ? unavailable(
-                                      "cancelled",
-                                      "Browser cleanup outcome is uncertain",
-                                      true,
-                                    )
-                                  : { ok: true, elapsedMs: 0 },
-                              ),
-                            )
-                          : cleanup(host).pipe(
-                              Effect.as<Browser.BrowserExecuteResult>({ ok: true, elapsedMs: 0 }),
-                            )
-                      ).pipe(
-                        Effect.uninterruptible,
-                        Effect.orElseSucceed(() =>
-                          unavailable("cancelled", "Browser cleanup outcome is uncertain", true),
-                        ),
-                      );
-                      yield* Deferred.succeed(completion, result);
-                      return result;
-                    }).pipe(Effect.uninterruptible);
-                  if (!translation)
-                    return unavailable(
-                      "capability_unsupported",
-                      "Native browser command has no supported T3 equivalent",
-                    );
-                  let tabId: PreviewTabId | undefined;
-                  if (params.command.tabId !== undefined) {
-                    const decoded = decodeTabId(params.command.tabId);
-                    if (decoded._tag === "None")
-                      return unavailable("capability_unsupported", "Invalid tab identity");
-                    tabId = decoded.value;
-                  }
-                  inFlight.add(params.requestId);
-                  return yield* Effect.gen(function* () {
-                    const result = yield* broker.invoke({
+                  const targetRequestId =
+                    method === "cancelRequest" ? (params.command.requestId as string) : undefined;
+                  const key = encodeLifecycleKey([
+                    host.id,
+                    String(host.generation),
+                    method,
+                    method === "closeSession" ? "" : (targetRequestId ?? params.turnId ?? ""),
+                  ]);
+                  const previous = lifecycleResults.get(key);
+                  if (previous) return yield* Deferred.await(previous);
+                  if (closed)
+                    return unavailable("backend_unavailable", "Native browser session has closed");
+                  const completion = yield* Deferred.make<Browser.BrowserExecuteResult>();
+                  lifecycleResults.set(key, completion);
+                  if (targetRequestId !== undefined) canceled.add(targetRequestId);
+                  if (method === "turnEnded" && params.turnId !== undefined)
+                    endedTurns.add(params.turnId);
+                  if (method === "closeSession") closed = true;
+                  const cleanup = (target: Host) =>
+                    broker.nativeLifecycle({
                       scope,
-                      host,
-                      operation: translation.operation,
-                      input: translation.input,
-                      ...(tabId === undefined ? {} : { tabId }),
-                      nativeRequestId: params.requestId,
+                      host: target,
+                      operation: "releaseAgent",
+                      input: {},
+                      kind: method,
+                      targetRequestId,
                       nativeTurnId: params.turnId,
-                      beforeDispatch: validate(params, !translation.read).pipe(
-                        Effect.map(
-                          (current) =>
-                            current !== undefined &&
-                            !closed &&
-                            !canceled.has(params.requestId) &&
-                            (params.turnId === undefined || !endedTurns.has(params.turnId)),
-                        ),
-                      ),
+                      closeTabs: params.command.closeTabs === true,
                     });
-                    if (translation.operation === "evaluate")
-                      return { ok: true, value: result, elapsedMs: 0 };
-                    if (method === "screenshot") {
-                      const snapshot = decodeSnapshot(result);
-                      return snapshot._tag === "Some"
-                        ? {
-                            ok: true,
-                            image: {
-                              base64: snapshot.value.screenshot.data,
-                              mimeType: snapshot.value.screenshot.mimeType,
-                            },
-                            elapsedMs: 0,
-                          }
-                        : unavailable("execution_error", "Invalid preview screenshot");
-                    }
-                    if (method === "playwright" && translation.read) {
-                      const snapshot = decodeSnapshot(result);
-                      return snapshot._tag === "Some" &&
-                        typeof snapshot.value.accessibilityTree === "string"
-                        ? {
-                            ok: true,
-                            value: snapshot.value.accessibilityTree.replace(
-                              /\s*\[ref=t3-[^\]]+\]/g,
-                              "",
-                            ),
-                            elapsedMs: 0,
-                          }
-                        : unavailable("execution_error", "Invalid preview DOM snapshot");
-                    }
-                    if (method === "list") {
-                      const tabs = decodeTabs(result, { onExcessProperty: "error" });
-                      return tabs._tag === "Some"
-                        ? { ok: true, tabs: tabs.value, elapsedMs: 0 }
-                        : unavailable("execution_error", "Invalid preview tab summaries");
-                    }
-                    const decodedStatus = decodeStatus(result);
-                    if (method === "getState") {
-                      if (decodedStatus._tag === "None")
-                        return unavailable("execution_error", "Invalid preview status");
-                      const status = decodedStatus.value;
-                      if (!status.navigationHistory)
-                        return unavailable(
-                          "capability_unsupported",
-                          "Preview host cannot report navigation history",
-                        );
-                      return {
-                        ok: true,
-                        state: {
-                          url: status.url ?? "about:blank",
-                          title: status.title ?? "",
-                          ...status.navigationHistory,
-                          ...(status.viewport
-                            ? {
-                                viewportWidth: status.viewport.width,
-                                viewportHeight: status.viewport.height,
-                              }
-                            : {}),
-                        },
-                        elapsedMs: 0,
-                      };
-                    }
-                    if (method === "newTab" || method === "activateTab") {
-                      if (decodedStatus._tag === "None")
-                        return unavailable(
-                          "execution_error",
-                          "Invalid preview status",
-                          method === "newTab",
-                        );
-                      const status = decodedStatus.value;
-                      if (!status.tabId || !status.viewport)
-                        return unavailable(
-                          "execution_error",
-                          "Preview host did not return a native tab summary",
-                          true,
-                        );
-                      return {
-                        ok: true,
-                        tab: {
-                          tabId: status.tabId,
-                          url: status.url ?? "about:blank",
-                          title: status.title ?? "",
-                          viewport: status.viewport,
-                        },
-                        elapsedMs: 0,
-                      };
-                    }
-                    if (method === "getDialog") {
-                      if (decodedStatus._tag === "None")
-                        return unavailable("execution_error", "Invalid preview status");
-                      const dialog = decodedStatus.value.dialog;
-                      if (!dialog) return { ok: true, dialog: null, elapsedMs: 0 };
-                      if (!["alert", "confirm", "prompt", "beforeunload"].includes(dialog.type))
-                        return unavailable("execution_error", "Unsupported browser dialog type");
-                      return {
-                        ok: true,
-                        dialog: {
-                          type: dialog.type as "alert" | "confirm" | "prompt" | "beforeunload",
-                          message: dialog.message,
-                          ...(dialog.defaultValue === undefined
-                            ? {}
-                            : { defaultPrompt: dialog.defaultValue }),
-                        },
-                        elapsedMs: 0,
-                      };
-                    }
-                    return { ok: true, elapsedMs: 0 };
-                  }).pipe(Effect.ensuring(Effect.sync(() => inFlight.delete(params.requestId))));
-                });
-                const result = yield* execute.pipe(
-                  Effect.catch((error) =>
-                    Effect.succeed(
-                      unavailable(
-                        error._tag === "PreviewAutomationNoAvailableHostError"
-                          ? "backend_unavailable"
-                          : error._tag === "PreviewAutomationControlInterruptedError"
-                            ? "cancelled"
-                            : "execution_error",
-                        "Browser operation failed or was interrupted; refresh browser facts before continuing",
-                        error._tag !== "PreviewAutomationNoAvailableHostError",
-                      ),
+                  if (method === "closeSession") released = true;
+                  const result = yield* (
+                    method === "closeSession"
+                      ? Effect.forEach([...discovered.values()], (target) =>
+                          cleanup(target).pipe(Effect.result),
+                        ).pipe(
+                          Effect.map((results): Browser.BrowserExecuteResult =>
+                            results.some(Result.isFailure)
+                              ? unavailable(
+                                  "cancelled",
+                                  "Browser cleanup outcome is uncertain",
+                                  true,
+                                )
+                              : { ok: true, elapsedMs: 0 },
+                          ),
+                        )
+                      : cleanup(host).pipe(
+                          Effect.as<Browser.BrowserExecuteResult>({ ok: true, elapsedMs: 0 }),
+                        )
+                  ).pipe(
+                    Effect.uninterruptible,
+                    Effect.orElseSucceed(() =>
+                      unavailable("cancelled", "Browser cleanup outcome is uncertain", true),
+                    ),
+                  );
+                  yield* Deferred.succeed(completion, result);
+                  return result;
+                }).pipe(Effect.uninterruptible);
+              if (!translation)
+                return unavailable(
+                  "capability_unsupported",
+                  "Native browser command has no supported T3 equivalent",
+                );
+              let tabId: PreviewTabId | undefined;
+              if (params.command.tabId !== undefined) {
+                const decoded = decodeTabId(params.command.tabId);
+                if (decoded._tag === "None")
+                  return unavailable("capability_unsupported", "Invalid tab identity");
+                tabId = decoded.value;
+              }
+              inFlight.add(params.requestId);
+              return yield* Effect.gen(function* () {
+                const result = yield* broker.invoke({
+                  scope,
+                  host,
+                  operation: translation.operation,
+                  input: translation.input,
+                  ...(tabId === undefined ? {} : { tabId }),
+                  nativeRequestId: params.requestId,
+                  nativeTurnId: params.turnId,
+                  beforeDispatch: validate(params, !translation.read).pipe(
+                    Effect.map(
+                      (current) =>
+                        current !== undefined &&
+                        !closed &&
+                        !canceled.has(params.requestId) &&
+                        (params.turnId === undefined || !endedTurns.has(params.turnId)),
                     ),
                   ),
-                );
-                return { ...result, elapsedMs: (yield* Clock.currentTimeMillis) - startedAt };
-              }),
-          };
-        }),
+                });
+                if (translation.operation === "evaluate")
+                  return { ok: true, value: result, elapsedMs: 0 };
+                if (method === "screenshot") {
+                  const snapshot = decodeSnapshot(result);
+                  return snapshot._tag === "Some"
+                    ? {
+                        ok: true,
+                        image: {
+                          base64: snapshot.value.screenshot.data,
+                          mimeType: snapshot.value.screenshot.mimeType,
+                        },
+                        elapsedMs: 0,
+                      }
+                    : unavailable("execution_error", "Invalid preview screenshot");
+                }
+                if (method === "playwright" && translation.read) {
+                  const snapshot = decodeSnapshot(result);
+                  return snapshot._tag === "Some" &&
+                    typeof snapshot.value.accessibilityTree === "string"
+                    ? {
+                        ok: true,
+                        value: snapshot.value.accessibilityTree.replace(
+                          /\s*\[ref=t3-[^\]]+\]/g,
+                          "",
+                        ),
+                        elapsedMs: 0,
+                      }
+                    : unavailable("execution_error", "Invalid preview DOM snapshot");
+                }
+                if (method === "list") {
+                  const tabs = decodeTabs(result, { onExcessProperty: "error" });
+                  return tabs._tag === "Some"
+                    ? { ok: true, tabs: tabs.value, elapsedMs: 0 }
+                    : unavailable("execution_error", "Invalid preview tab summaries");
+                }
+                const decodedStatus = decodeStatus(result);
+                if (method === "getState") {
+                  if (decodedStatus._tag === "None")
+                    return unavailable("execution_error", "Invalid preview status");
+                  const status = decodedStatus.value;
+                  if (!status.navigationHistory)
+                    return unavailable(
+                      "capability_unsupported",
+                      "Preview host cannot report navigation history",
+                    );
+                  return {
+                    ok: true,
+                    state: {
+                      url: status.url ?? "about:blank",
+                      title: status.title ?? "",
+                      ...status.navigationHistory,
+                      ...(status.viewport
+                        ? {
+                            viewportWidth: status.viewport.width,
+                            viewportHeight: status.viewport.height,
+                          }
+                        : {}),
+                    },
+                    elapsedMs: 0,
+                  };
+                }
+                if (method === "newTab" || method === "activateTab") {
+                  if (decodedStatus._tag === "None")
+                    return unavailable(
+                      "execution_error",
+                      "Invalid preview status",
+                      method === "newTab",
+                    );
+                  const status = decodedStatus.value;
+                  if (!status.tabId || !status.viewport)
+                    return unavailable(
+                      "execution_error",
+                      "Preview host did not return a native tab summary",
+                      true,
+                    );
+                  return {
+                    ok: true,
+                    tab: {
+                      tabId: status.tabId,
+                      url: status.url ?? "about:blank",
+                      title: status.title ?? "",
+                      viewport: status.viewport,
+                    },
+                    elapsedMs: 0,
+                  };
+                }
+                if (method === "getDialog") {
+                  if (decodedStatus._tag === "None")
+                    return unavailable("execution_error", "Invalid preview status");
+                  const dialog = decodedStatus.value.dialog;
+                  if (!dialog) return { ok: true, dialog: null, elapsedMs: 0 };
+                  if (!["alert", "confirm", "prompt", "beforeunload"].includes(dialog.type))
+                    return unavailable("execution_error", "Unsupported browser dialog type");
+                  return {
+                    ok: true,
+                    dialog: {
+                      type: dialog.type as "alert" | "confirm" | "prompt" | "beforeunload",
+                      message: dialog.message,
+                      ...(dialog.defaultValue === undefined
+                        ? {}
+                        : { defaultPrompt: dialog.defaultValue }),
+                    },
+                    elapsedMs: 0,
+                  };
+                }
+                return { ok: true, elapsedMs: 0 };
+              }).pipe(Effect.ensuring(Effect.sync(() => inFlight.delete(params.requestId))));
+            });
+            const result = yield* execute.pipe(
+              Effect.catch((error) =>
+                Effect.succeed(
+                  unavailable(
+                    error._tag === "PreviewAutomationNoAvailableHostError"
+                      ? "backend_unavailable"
+                      : error._tag === "PreviewAutomationControlInterruptedError"
+                        ? "cancelled"
+                        : "execution_error",
+                    "Browser operation failed or was interrupted; refresh browser facts before continuing",
+                    error._tag !== "PreviewAutomationNoAvailableHostError",
+                  ),
+                ),
+              ),
+            );
+            return { ...result, elapsedMs: (yield* Clock.currentTimeMillis) - startedAt };
+          }),
+        };
+      }),
     });
   }),
 );

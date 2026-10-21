@@ -112,11 +112,10 @@ export const makeZCodeResetCreditConsumer = Effect.fn("makeZCodeResetCreditConsu
         }),
     ),
   );
-  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (
-    resetWindowId,
-    options,
-  ) =>
-    Effect.gen(function* () {
+  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = Effect.fn(
+    "ZCodeDriver.consumeResetCredit",
+  )(function* (resetWindowId, options) {
+    return yield* Effect.gen(function* () {
       if (resetWindowId === undefined)
         return yield* new ProviderDriverError({
           driver: DRIVER_KIND,
@@ -190,8 +189,6 @@ export const makeZCodeResetCreditConsumer = Effect.fn("makeZCodeResetCreditConsu
         "authorization",
         "x-bigmodel-authorization",
       ]),
-      // A timeout here interrupts a POST that may still have landed, so it
-      // is uncertain, never a refusal; classified refusals pass through.
       Effect.catch((error) =>
         isProviderDriverError(error)
           ? Effect.fail(error)
@@ -206,6 +203,7 @@ export const makeZCodeResetCreditConsumer = Effect.fn("makeZCodeResetCreditConsu
             ),
       ),
     );
+  });
 
   return Object.assign(consumeResetCredit, { accountIdentity: resetCreditAccountIdentity });
 });
@@ -218,115 +216,121 @@ export const ZCodeDriver: ProviderDriver<ZCodeSettingsType, ZCodeDriverEnv> = {
   },
   configSchema: ZCodeSettings,
   defaultConfig: (): ZCodeSettingsType => decodeZCodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const httpClient = yield* HttpClient.HttpClient;
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const { attachmentsDir } = yield* ServerConfig;
-      const processEnv = yield* mergeProviderInstanceEnvironment(environment);
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        driverKind: DRIVER_KIND,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies ZCodeSettings;
+  create: Effect.fn("ZCodeDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }) {
+    const crypto = yield* Crypto.Crypto;
+    const httpClient = yield* HttpClient.HttpClient;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { attachmentsDir } = yield* ServerConfig;
+    const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stampIdentity = withInstanceIdentity({
+      instanceId,
+      driverKind: DRIVER_KIND,
+      displayName,
+      accentColor,
+      continuationGroupKey: continuationIdentity.continuationKey,
+    });
+    const effectiveConfig = { ...config, enabled } satisfies ZCodeSettings;
 
-      const adapter = yield* Effect.mapError(
-        makeZCodeAdapterV2(instanceId).pipe(
-          Effect.provide(
-            ZCodeSessionRuntime.layer(effectiveConfig, {
-              environment: processEnv,
-              instanceId,
-              attachmentsDir,
-            }),
-          ),
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        ),
-        (cause) =>
-          new ProviderDriverError({
-            driver: DRIVER_KIND,
+    const adapter = yield* Effect.mapError(
+      makeZCodeAdapterV2(instanceId).pipe(
+        Effect.provide(
+          ZCodeSessionRuntime.layer(effectiveConfig, {
+            environment: processEnv,
             instanceId,
-            detail: "Failed to build the ZCode adapter",
-            cause,
+            attachmentsDir,
           }),
-      );
-      const textGeneration = yield* Effect.mapError(
-        makeZCodeTextGeneration(effectiveConfig, processEnv).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         ),
-        (cause) =>
-          new ProviderDriverError({
-            driver: DRIVER_KIND,
-            instanceId,
-            detail: "Failed to build ZCode text generation",
-            cause,
-          }),
-      );
-
-      const probe = Effect.all(
-        {
-          provider: buildInitialZCodeProviderSnapshot(effectiveConfig, processEnv),
-          usageLimits: readZCodeUsageLimits({ enabled, environment: processEnv }),
-        },
-        { concurrency: "unbounded" },
-      ).pipe(
-        Effect.map(({ provider, usageLimits }) => ({ ...provider, usageLimits })),
-        Effect.provideService(HttpClient.HttpClient, httpClient),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
-      );
+      ),
+      (cause) =>
+        new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "Failed to build the ZCode adapter",
+          cause,
+        }),
+    );
+    const textGeneration = yield* Effect.mapError(
+      makeZCodeTextGeneration(effectiveConfig, processEnv).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+      (cause) =>
+        new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "Failed to build ZCode text generation",
+          cause,
+        }),
+    );
 
-      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<ZCodeSettings>>({
-        resolveMaintenance: () => Effect.succeed(MANUAL_MAINTENANCE),
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: () => probe.pipe(Effect.map(stampIdentity)),
-        checkProvider: probe.pipe(Effect.map(stampIdentity)),
-        refreshOnInterval: true,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Failed to build the ZCode snapshot: ${cause.message ?? String(cause)}`,
-              cause,
-            }),
-        ),
-      );
+    const probe = Effect.all(
+      {
+        provider: buildInitialZCodeProviderSnapshot(effectiveConfig, processEnv),
+        usageLimits: readZCodeUsageLimits({ enabled, environment: processEnv }),
+      },
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(({ provider, usageLimits }) => ({ ...provider, usageLimits })),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
 
-      const consumeResetCredit = yield* makeZCodeResetCreditConsumer({
-        instanceId,
-        environment: processEnv,
-        refreshUsage: snapshot.refresh,
-      });
+    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
+    const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<ZCodeSettings>>({
+      resolveMaintenance: () => Effect.succeed(MANUAL_MAINTENANCE),
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: () => probe.pipe(Effect.map(stampIdentity)),
+      checkProvider: probe.pipe(Effect.map(stampIdentity)),
+      refreshOnInterval: true,
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: `Failed to build the ZCode snapshot: ${cause.message ?? String(cause)}`,
+            cause,
+          }),
+      ),
+    );
 
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        orchestrationAdapter: adapter,
-        textGeneration,
-        consumeResetCredit,
-        resetCreditAccountIdentity: consumeResetCredit.accountIdentity,
-      } satisfies ProviderInstance;
-    }),
+    const consumeResetCredit = yield* makeZCodeResetCreditConsumer({
+      instanceId,
+      environment: processEnv,
+      refreshUsage: snapshot.refresh,
+    });
+
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot,
+      orchestrationAdapter: adapter,
+      textGeneration,
+      consumeResetCredit,
+      resetCreditAccountIdentity: consumeResetCredit.accountIdentity,
+    } satisfies ProviderInstance;
+  }),
 };

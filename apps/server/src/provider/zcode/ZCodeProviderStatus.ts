@@ -105,10 +105,10 @@ const decodeProviderConfig = Schema.decodeUnknownEffect(
 /**
  * Reads the login-selected provider family for the subscription usage lookup.
  */
-export const readDefaultModelSelection = (
-  environment: NodeJS.ProcessEnv | string,
-): Effect.Effect<ZCodeDefaultModel | undefined, never, FileSystem.FileSystem | Path.Path> =>
-  Effect.gen(function* () {
+export const readDefaultModelSelection = Effect.fn("ZCodeProviderStatus.readDefaultModelSelection")(
+  function* (
+    environment: NodeJS.ProcessEnv | string,
+  ): Effect.fn.Return<ZCodeDefaultModel | undefined, never, FileSystem.FileSystem | Path.Path> {
     const fileSystem = yield* FileSystem.FileSystem;
     const { personalConfigPath: configPath } = yield* resolveZCodeEnvironmentPaths(
       typeof environment === "string" ? { HOME: environment } : environment,
@@ -130,7 +130,8 @@ export const readDefaultModelSelection = (
       return undefined;
     }
     return { providerId: selection.providerId, modelId: selection.modelId };
-  });
+  },
+);
 
 const ZCODE_MODEL_PROVIDER_ID = "account:zai-individual-coding-plan";
 
@@ -163,15 +164,15 @@ export const buildZCodeModels = (): ReadonlyArray<ServerProviderModel> =>
 const parseZcodeVersion = (output: string): string | null =>
   output.match(/\bv?(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
 
-const probeRuntimeVersion = (
+const probeRuntimeVersion = Effect.fn("ZCodeProviderStatus.probeRuntimeVersion")(function* (
   runtime: ZCodeResolvedRuntime,
   environment: NodeJS.ProcessEnv,
-): Effect.Effect<
+): Effect.fn.Return<
   string | null,
   PlatformError.PlatformError,
   ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
-> =>
-  Effect.gen(function* () {
+> {
+  return yield* Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const args = makeZCodeChildArguments(runtime, environment);
     args.push("--version");
@@ -189,6 +190,7 @@ const probeRuntimeVersion = (
     const exitCode = yield* child.exitCode.pipe(Effect.map(Number));
     return exitCode === 0 ? parseZcodeVersion(stdout) : null;
   }).pipe(Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS), Effect.map(OptionGetOrNull));
+});
 
 const OptionGetOrNull = <A>(
   value: { readonly _tag: "None" } | { readonly _tag: "Some"; readonly value: A },
@@ -228,73 +230,58 @@ const snapshotDraft = (input: {
   ...(input.message !== undefined ? { message: input.message } : {}),
 });
 
-export const buildInitialZCodeProviderSnapshot = (
+export const buildInitialZCodeProviderSnapshot = Effect.fn(
+  "ZCodeProviderStatus.buildInitialZCodeProviderSnapshot",
+)(function* (
   settings: ZCodeRuntimeSettings & { readonly enabled: boolean },
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.Effect<
+): Effect.fn.Return<
   ServerProviderDraft,
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
-> =>
-  Effect.gen(function* () {
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const models = buildZCodeModels();
+> {
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const models = buildZCodeModels();
 
-    if (!settings.enabled) {
-      return snapshotDraft({
-        nativeGoals: true,
-        enabled: false,
-        checkedAt,
-        models,
-        installed: false,
-        version: null,
-        status: "disabled",
-        auth: { status: "unknown" },
-        message: "ZCode is disabled in T3 Code settings.",
-      });
-    }
+  if (!settings.enabled) {
+    return snapshotDraft({
+      nativeGoals: true,
+      enabled: false,
+      checkedAt,
+      models,
+      installed: false,
+      version: null,
+      status: "disabled",
+      auth: { status: "unknown" },
+      message: "ZCode is disabled in T3 Code settings.",
+    });
+  }
 
-    const runtime = yield* resolveZCodeRuntime(settings);
-    const version = yield* probeRuntimeVersion(runtime, environment).pipe(
-      Effect.scoped,
-      Effect.orElseSucceed(() => null),
-    );
-    const runtimeUsable = version !== null;
+  const runtime = yield* resolveZCodeRuntime(settings);
+  const version = yield* probeRuntimeVersion(runtime, environment).pipe(
+    Effect.scoped,
+    Effect.orElseSucceed(() => null),
+  );
+  const runtimeUsable = version !== null;
 
-    const login = yield* readZCodeLoginState(environment);
+  const login = yield* readZCodeLoginState(environment);
 
-    if (!runtimeUsable) {
-      return snapshotDraft({
-        nativeGoals: true,
-        enabled: settings.enabled,
-        checkedAt,
-        models,
-        installed: false,
-        version: null,
-        status: "error",
-        auth: { status: "unknown" },
-        message:
-          "Official ZCode runtime not found. Install the ZCode app or set a binary path in provider settings.",
-      });
-    }
+  if (!runtimeUsable) {
+    return snapshotDraft({
+      nativeGoals: true,
+      enabled: settings.enabled,
+      checkedAt,
+      models,
+      installed: false,
+      version: null,
+      status: "error",
+      auth: { status: "unknown" },
+      message:
+        "Official ZCode runtime not found. Install the ZCode app or set a binary path in provider settings.",
+    });
+  }
 
-    if (!login.standaloneLogin) {
-      return snapshotDraft({
-        nativeGoals: true,
-        enabled: settings.enabled,
-        checkedAt,
-        models,
-        installed: true,
-        version,
-        status: "warning",
-        auth: { status: "unauthenticated", type: "zai-oauth", label: "Z.AI account" },
-        message: login.sharedSignIn
-          ? "ZCode is signed in through the desktop app, but headless (CLI) turns need a one-time `zcode login` in a terminal."
-          : "Run `zcode login` once in a terminal so T3 can start ZCode sessions headless.",
-      });
-    }
-
-    const profile = yield* readZCodeAccountProfile(environment);
+  if (!login.standaloneLogin) {
     return snapshotDraft({
       nativeGoals: true,
       enabled: settings.enabled,
@@ -302,7 +289,23 @@ export const buildInitialZCodeProviderSnapshot = (
       models,
       installed: true,
       version,
-      status: "ready",
-      auth: { status: "authenticated", type: "zai-oauth", label: "Z.AI Coding Plan", ...profile },
+      status: "warning",
+      auth: { status: "unauthenticated", type: "zai-oauth", label: "Z.AI account" },
+      message: login.sharedSignIn
+        ? "ZCode is signed in through the desktop app, but headless (CLI) turns need a one-time `zcode login` in a terminal."
+        : "Run `zcode login` once in a terminal so T3 can start ZCode sessions headless.",
     });
+  }
+
+  const profile = yield* readZCodeAccountProfile(environment);
+  return snapshotDraft({
+    nativeGoals: true,
+    enabled: settings.enabled,
+    checkedAt,
+    models,
+    installed: true,
+    version,
+    status: "ready",
+    auth: { status: "authenticated", type: "zai-oauth", label: "Z.AI Coding Plan", ...profile },
   });
+});

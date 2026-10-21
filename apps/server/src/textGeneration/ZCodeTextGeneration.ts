@@ -28,10 +28,12 @@ export const makeZCodeTextGeneration = Effect.fn("makeZCodeTextGeneration")(func
   const runtime = yield* ZCodeRuntime.resolveZCodeRuntime(zcodeSettings);
   const readNativeAccount = yield* makeZCodeNativeAccountReader(environment);
 
-  const runZcodeJson = <S extends Schema.Top>(
+  const runZcodeJson = Effect.fn("ZCodeTextGeneration.runZcodeJson")(function* <
+    S extends Schema.Top,
+  >(
     request: TextGenerationOperations.Request<S>,
-  ): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
-    Effect.gen(function* () {
+  ): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+    return yield* Effect.gen(function* () {
       const { operation, cwd, prompt, outputSchema, modelSelection } = request;
       const nativeAccount =
         runtime.kind === "app-bundle" && runtime.builtinProviderConfigFile
@@ -113,6 +115,7 @@ export const makeZCodeTextGeneration = Effect.fn("makeZCodeTextGeneration")(func
             }),
       ),
     );
+  });
 
   return TextGenerationOperations.fromRunner(
     "ZCodeTextGeneration",

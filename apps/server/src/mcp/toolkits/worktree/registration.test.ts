@@ -170,15 +170,15 @@ it.effect("production mcp layer lists worktree tools over http", () =>
             getEnvironmentId: Effect.succeed("environment-scratch" as never),
           }),
         ),
-      ),
-    ),
-    Effect.provide(
-      Layer.mergeAll(
-        NodeHttpServer.layerTest,
-        ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
-          Layer.provide(NodeServices.layer),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            NodeHttpServer.layerTest,
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+            NodeServices.layer,
+          ),
         ),
-        NodeServices.layer,
       ),
     ),
   ),

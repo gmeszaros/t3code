@@ -1432,6 +1432,11 @@ describe("OrchestratorMcpService provider resolution", () => {
 
   it.live.each([
     { name: "parent instance", parentEnabled: true, model: "gpt-5.4" },
+    {
+      name: "alternate instance advertising the requested model",
+      parentEnabled: true,
+      model: "gpt-5.5",
+    },
     { name: "alternate instance", parentEnabled: false, model: "gpt-5.5" },
   ])(
     "replays accepted creation on the $name without authorizing new disabled work",
@@ -1468,7 +1473,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             },
           });
           const layerThreads = ThreadManagementService.layer.pipe(
-            Layer.provideMerge(layerOrchestrator),
+            Layer.provideMerge(Layer.merge(layerOrchestrator, layerSettings)),
             Layer.provide(
               LegacyV1ThreadImporter.layer.pipe(
                 Layer.provide(layerOrchestrator),
@@ -1530,9 +1535,10 @@ describe("OrchestratorMcpService provider resolution", () => {
             };
             const first = yield* service.createThreads(scope, request);
             const child = first.threads[0]!;
-            const selection = parentEnabled
-              ? { instanceId: codexInstanceId, model: "gpt-5.4" }
-              : { instanceId: altInstanceId, model: "gpt-5.5" };
+            const selection =
+              model === "gpt-5.4"
+                ? { instanceId: codexInstanceId, model: "gpt-5.4" }
+                : { instanceId: altInstanceId, model: "gpt-5.5" };
             assert.equal(first.threads.length, 1);
             assert.equal(child.providerInstanceId, selection.instanceId);
             assert.equal(child.model, selection.model);

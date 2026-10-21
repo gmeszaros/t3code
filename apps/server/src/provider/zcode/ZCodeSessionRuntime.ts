@@ -402,11 +402,8 @@ const modelRefFor = (
   };
 };
 
-export const makeZCodeSessionRuntime = (
-  settings: ZCodeSettings,
-  options?: ZCodeSessionRuntimeOptions,
-) =>
-  Effect.gen(function* () {
+export const makeZCodeSessionRuntime = Effect.fn("ZCodeSessionRuntime.makeZCodeSessionRuntime")(
+  function* (settings: ZCodeSettings, options?: ZCodeSessionRuntimeOptions) {
     const browserBridge = yield* Effect.serviceOption(ZCodeBrowserBridge.ZCodeBrowserBridge);
     const crypto = yield* Crypto.Crypto;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -427,16 +424,18 @@ export const makeZCodeSessionRuntime = (
     // test scope): when it closes, every running child is killed.
     const parentScope = yield* Scope.Scope;
 
-    const emitFor = (session: Pick<ZCodeSession, "threadId">, event: NativeEventInput) =>
-      Effect.gen(function* () {
-        const createdAt = yield* DateTime.now;
-        yield* PubSub.publish(runtimeEventPubSub, {
-          ...event,
-          providerInstanceId: boundInstanceId,
-          threadId: session.threadId,
-          createdAt,
-        });
+    const emitFor = Effect.fn("ZCodeSessionRuntime.emitFor")(function* (
+      session: Pick<ZCodeSession, "threadId">,
+      event: NativeEventInput,
+    ) {
+      const createdAt = yield* DateTime.now;
+      yield* PubSub.publish(runtimeEventPubSub, {
+        ...event,
+        providerInstanceId: boundInstanceId,
+        threadId: session.threadId,
+        createdAt,
       });
+    });
 
     const workspaceRef = (cwd: string): ZCodeWire.WorkspaceRef => ({
       workspacePath: cwd,
@@ -489,18 +488,19 @@ export const makeZCodeSessionRuntime = (
     const pruneInteractions = Effect.fn("t3-provider-zcode/pruneInteractions")(function* (
       session: ZCodeSession,
     ) {
-      const prune = <T extends PendingApproval | PendingUserInput>(ref: Ref.Ref<Map<string, T>>) =>
-        Effect.gen(function* () {
-          for (const [id, pending] of yield* Ref.get(ref)) {
-            if ((yield* Ref.get(ref)).size < 256) break;
-            if (yield* Deferred.isDone(pending.response))
-              yield* Ref.update(ref, (current) => {
-                const next = new Map(current);
-                if (next.get(id) === pending) next.delete(id);
-                return next;
-              });
-          }
-        });
+      const prune = Effect.fn("ZCodeSessionRuntime.prune")(function* <
+        T extends PendingApproval | PendingUserInput,
+      >(ref: Ref.Ref<Map<string, T>>) {
+        for (const [id, pending] of yield* Ref.get(ref)) {
+          if ((yield* Ref.get(ref)).size < 256) break;
+          if (yield* Deferred.isDone(pending.response))
+            yield* Ref.update(ref, (current) => {
+              const next = new Map(current);
+              if (next.get(id) === pending) next.delete(id);
+              return next;
+            });
+        }
+      });
       yield* prune(session.pendingApprovals);
       yield* prune(session.pendingUserInputs);
     });
@@ -995,16 +995,18 @@ export const makeZCodeSessionRuntime = (
     // settles the session bookkeeping.
     yield* Effect.addFinalizer(() => stopAll().pipe(Effect.ignore));
 
-    const subscribeAndPump = (session: ZCodeSession, zcodeSessionId: string) =>
-      Effect.gen(function* () {
-        yield* session.spawned.client
-          .sessionSubscribe({ sessionId: zcodeSessionId, deliveryKind: "desktop-continuous" })
-          .pipe(
-            Effect.mapError((cause) =>
-              adapterError(session.threadId, "session/subscribe failed", cause),
-            ),
-          );
-      });
+    const subscribeAndPump = Effect.fn("ZCodeSessionRuntime.subscribeAndPump")(function* (
+      session: ZCodeSession,
+      zcodeSessionId: string,
+    ) {
+      yield* session.spawned.client
+        .sessionSubscribe({ sessionId: zcodeSessionId, deliveryKind: "desktop-continuous" })
+        .pipe(
+          Effect.mapError((cause) =>
+            adapterError(session.threadId, "session/subscribe failed", cause),
+          ),
+        );
+    });
 
     const makeAppServerSession = Effect.fn("t3-provider-zcode/makeAppServerSession")(function* (
       input: NativeSessionInput,
@@ -1051,183 +1053,199 @@ export const makeZCodeSessionRuntime = (
             ...browserOptions,
             // Translate in wire order before the next reverse request or exit.
             // A separate queue consumer can race turn.started and lose ownership.
-            onSessionEvent: (event) =>
-              Effect.gen(function* () {
+            onSessionEvent: Effect.fn("ZCodeSessionRuntime.onSessionEvent")(function* (event) {
+              return yield* Effect.gen(function* () {
                 const session = sessionRef.current;
                 if (
                   session !== undefined &&
                   event.sessionId === (yield* Ref.get(session.zcodeSessionId))
                 )
                   yield* translateSessionEvent(session, event);
-              }).pipe(Effect.ignore),
-            onTermination: () =>
-              Effect.gen(function* () {
+              }).pipe(Effect.ignore);
+            }),
+            onTermination: Effect.fn("ZCodeSessionRuntime.onTermination")(function* () {
+              return yield* Effect.gen(function* () {
                 terminated = true;
                 const session = sessionRef.current;
                 if (session) yield* invalidateSession(session);
-              }).pipe(Effect.ignore),
+              }).pipe(Effect.ignore);
+            }),
             ...(runtime.kind === "app-bundle"
               ? {
                   onOfficialMcpAuthHeaders: (params) =>
                     readNativeAccount.officialMcpAuthHeaders(params),
                 }
               : {}),
-            onPermissionRequest: (params, serverRequestId) =>
-              Effect.gen(function* () {
-                const session = sessionRef.current;
-                if (session === undefined || !session.live) return { decision: "deny" };
-                if (
-                  params.sessionId !== undefined &&
-                  params.sessionId !== (yield* Ref.get(session.zcodeSessionId))
-                )
-                  return { decision: "deny" };
-                const backgroundTurn =
-                  params.background === true ||
-                  (params.turnId !== undefined && session.backgroundTurns.has(params.turnId));
-                const activeTurnId = yield* interactionTurn(session, params.turnId, backgroundTurn);
-                if (backgroundTurn || activeTurnId === undefined || session.interrupting)
-                  return { decision: "deny" };
-                yield* pruneInteractions(session);
-                const approvalId = RuntimeRequestId.make(
-                  yield* Effect.orDie(crypto.randomUUIDv4()),
-                );
-                const deferred = yield* Deferred.make<unknown, never>();
-                const zoptions = params.options ?? [];
-                const nativeRequestId = params.requestId ?? String(serverRequestId);
-                const existing = yield* Ref.modify(pendingApprovals, (map) => {
-                  const previous = [...map.values()].find(
-                    (entry) => entry.nativeRequestId === nativeRequestId,
+            onPermissionRequest: Effect.fn("ZCodeSessionRuntime.onPermissionRequest")(
+              function* (params, serverRequestId) {
+                return yield* Effect.gen(function* () {
+                  const session = sessionRef.current;
+                  if (session === undefined || !session.live) return { decision: "deny" };
+                  if (
+                    params.sessionId !== undefined &&
+                    params.sessionId !== (yield* Ref.get(session.zcodeSessionId))
+                  )
+                    return { decision: "deny" };
+                  const backgroundTurn =
+                    params.background === true ||
+                    (params.turnId !== undefined && session.backgroundTurns.has(params.turnId));
+                  const activeTurnId = yield* interactionTurn(
+                    session,
+                    params.turnId,
+                    backgroundTurn,
                   );
-                  if (previous) return [previous, map] as const;
-                  const next = new Map(map);
-                  next.set(approvalId, {
-                    turnId: activeTurnId,
-                    nativeTurnId: params.turnId,
-                    serverRequestId,
-                    nativeRequestId,
-                    toolCallId: params.toolCallId,
-                    options: zoptions,
-                    background: backgroundTurn,
-                    response: deferred,
+                  if (backgroundTurn || activeTurnId === undefined || session.interrupting)
+                    return { decision: "deny" };
+                  yield* pruneInteractions(session);
+                  const approvalId = RuntimeRequestId.make(
+                    yield* Effect.orDie(crypto.randomUUIDv4()),
+                  );
+                  const deferred = yield* Deferred.make<unknown, never>();
+                  const zoptions = params.options ?? [];
+                  const nativeRequestId = params.requestId ?? String(serverRequestId);
+                  const existing = yield* Ref.modify(pendingApprovals, (map) => {
+                    const previous = [...map.values()].find(
+                      (entry) => entry.nativeRequestId === nativeRequestId,
+                    );
+                    if (previous) return [previous, map] as const;
+                    const next = new Map(map);
+                    next.set(approvalId, {
+                      turnId: activeTurnId,
+                      nativeTurnId: params.turnId,
+                      serverRequestId,
+                      nativeRequestId,
+                      toolCallId: params.toolCallId,
+                      options: zoptions,
+                      background: backgroundTurn,
+                      response: deferred,
+                    });
+                    return [undefined, next] as const;
                   });
-                  return [undefined, next] as const;
-                });
-                if (existing) return yield* Deferred.await(existing.response);
-                yield* emitFor(session, {
-                  type: "request.opened",
-                  requestId: approvalId,
-                  ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-                  payload: {
-                    requestType: "permission_approval",
-                    ...(params.reason !== undefined ? { detail: params.reason } : {}),
-                    ...(params.toolName !== undefined ? { appName: params.toolName } : {}),
-                    // Session grants require the native V4 optionId path.
-                    options: zoptions.flatMap((option) => {
-                      const decision = permissionDecisionFor(option);
-                      return decision && permissionOptionFor(zoptions, decision, option.optionId)
-                        ? [{ optionId: option.optionId, decision, label: option.name }]
-                        : [];
-                    }),
-                    ...(params.input !== undefined ? { args: params.input } : {}),
-                  },
-                });
-                if (
-                  !session.live ||
-                  (!backgroundTurn && activeTurnId !== (yield* Ref.get(session.activeTurnId)))
-                )
-                  yield* settleInteractions(session, session.live ? activeTurnId : undefined);
-                return yield* Deferred.await(deferred);
-              }).pipe(Effect.catch(() => Effect.succeed({ decision: "deny" }))),
-            onUserInputRequest: (params, serverRequestId) =>
-              Effect.gen(function* () {
-                const session = sessionRef.current;
-                if (session === undefined || !session.live)
-                  return params.questions
+                  if (existing) return yield* Deferred.await(existing.response);
+                  yield* emitFor(session, {
+                    type: "request.opened",
+                    requestId: approvalId,
+                    ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
+                    payload: {
+                      requestType: "permission_approval",
+                      ...(params.reason !== undefined ? { detail: params.reason } : {}),
+                      ...(params.toolName !== undefined ? { appName: params.toolName } : {}),
+                      // Session grants require the native V4 optionId path.
+                      options: zoptions.flatMap((option) => {
+                        const decision = permissionDecisionFor(option);
+                        return decision && permissionOptionFor(zoptions, decision, option.optionId)
+                          ? [{ optionId: option.optionId, decision, label: option.name }]
+                          : [];
+                      }),
+                      ...(params.input !== undefined ? { args: params.input } : {}),
+                    },
+                  });
+                  if (
+                    !session.live ||
+                    (!backgroundTurn && activeTurnId !== (yield* Ref.get(session.activeTurnId)))
+                  )
+                    yield* settleInteractions(session, session.live ? activeTurnId : undefined);
+                  return yield* Deferred.await(deferred);
+                }).pipe(Effect.catch(() => Effect.succeed({ decision: "deny" })));
+              },
+            ),
+            onUserInputRequest: Effect.fn("ZCodeSessionRuntime.onUserInputRequest")(
+              function* (params, serverRequestId) {
+                return yield* Effect.gen(function* () {
+                  const session = sessionRef.current;
+                  if (session === undefined || !session.live)
+                    return params.questions
+                      ? { action: "cancel" }
+                      : { requestId: params.requestId, cancelled: true };
+                  const cancelled = params.questions
                     ? { action: "cancel" }
                     : { requestId: params.requestId, cancelled: true };
-                const cancelled = params.questions
-                  ? { action: "cancel" }
-                  : { requestId: params.requestId, cancelled: true };
-                if (
-                  params.sessionId !== undefined &&
-                  params.sessionId !== (yield* Ref.get(session.zcodeSessionId))
-                )
-                  return cancelled;
-                const backgroundTurn =
-                  params.turnId !== undefined && session.backgroundTurns.has(params.turnId);
-                const activeTurnId = yield* interactionTurn(session, params.turnId, backgroundTurn);
-                if (backgroundTurn || activeTurnId === undefined || session.interrupting)
-                  return cancelled;
-                yield* pruneInteractions(session);
-                const approvalId = RuntimeRequestId.make(
-                  yield* Effect.orDie(crypto.randomUUIDv4()),
-                );
-                const deferred = yield* Deferred.make<unknown, never>();
-                const questions = params.questions?.map((question, index) => ({
-                  id: `${params.requestId}:${index}`,
-                  header: question.header,
-                  question: question.question,
-                  options: question.options.map((option) => ({
-                    ...option,
-                    description: option.description ?? option.label,
-                  })),
-                  multiSelect: question.multiSelect ?? false,
-                  allowCustomAnswer: true,
-                }));
-                const existing = yield* Ref.modify(pendingUserInputs, (map) => {
-                  const previous = [...map.values()].find(
-                    (entry) => entry.nativeRequestId === params.requestId,
+                  if (
+                    params.sessionId !== undefined &&
+                    params.sessionId !== (yield* Ref.get(session.zcodeSessionId))
+                  )
+                    return cancelled;
+                  const backgroundTurn =
+                    params.turnId !== undefined && session.backgroundTurns.has(params.turnId);
+                  const activeTurnId = yield* interactionTurn(
+                    session,
+                    params.turnId,
+                    backgroundTurn,
                   );
-                  if (previous) return [previous, map] as const;
-                  const next = new Map(map);
-                  next.set(approvalId, {
-                    turnId: activeTurnId,
-                    nativeTurnId: params.turnId,
-                    background: backgroundTurn,
-                    serverRequestId,
-                    nativeRequestId: params.requestId,
-                    questionIds: questions?.map((question) => question.id),
-                    response: deferred,
+                  if (backgroundTurn || activeTurnId === undefined || session.interrupting)
+                    return cancelled;
+                  yield* pruneInteractions(session);
+                  const approvalId = RuntimeRequestId.make(
+                    yield* Effect.orDie(crypto.randomUUIDv4()),
+                  );
+                  const deferred = yield* Deferred.make<unknown, never>();
+                  const questions = params.questions?.map((question, index) => ({
+                    id: `${params.requestId}:${index}`,
+                    header: question.header,
+                    question: question.question,
+                    options: question.options.map((option) => ({
+                      ...option,
+                      description: option.description ?? option.label,
+                    })),
+                    multiSelect: question.multiSelect ?? false,
+                    allowCustomAnswer: true,
+                  }));
+                  const existing = yield* Ref.modify(pendingUserInputs, (map) => {
+                    const previous = [...map.values()].find(
+                      (entry) => entry.nativeRequestId === params.requestId,
+                    );
+                    if (previous) return [previous, map] as const;
+                    const next = new Map(map);
+                    next.set(approvalId, {
+                      turnId: activeTurnId,
+                      nativeTurnId: params.turnId,
+                      background: backgroundTurn,
+                      serverRequestId,
+                      nativeRequestId: params.requestId,
+                      questionIds: questions?.map((question) => question.id),
+                      response: deferred,
+                    });
+                    return [undefined, next] as const;
                   });
-                  return [undefined, next] as const;
-                });
-                if (existing) return yield* Deferred.await(existing.response);
-                yield* emitFor(session, {
-                  type: "user-input.requested",
-                  requestId: approvalId,
-                  ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-                  payload: {
-                    questions: questions ?? [
-                      {
-                        id: params.requestId,
-                        header: "ZCode",
-                        question: params.prompt ?? "ZCode requests input",
-                        options:
-                          params.choices?.map((choice) => ({
-                            value: choice,
-                            label: choice,
-                            description: choice,
-                          })) ?? [],
-                        allowCustomAnswer: true,
-                      },
-                    ],
-                  },
-                });
-                if (
-                  !session.live ||
-                  (!backgroundTurn && activeTurnId !== (yield* Ref.get(session.activeTurnId)))
-                )
-                  yield* settleInteractions(session, session.live ? activeTurnId : undefined);
-                return yield* Deferred.await(deferred);
-              }).pipe(
-                Effect.catch(() =>
-                  Effect.succeed(
-                    params.questions
-                      ? { action: "cancel" }
-                      : { requestId: params.requestId, cancelled: true },
+                  if (existing) return yield* Deferred.await(existing.response);
+                  yield* emitFor(session, {
+                    type: "user-input.requested",
+                    requestId: approvalId,
+                    ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
+                    payload: {
+                      questions: questions ?? [
+                        {
+                          id: params.requestId,
+                          header: "ZCode",
+                          question: params.prompt ?? "ZCode requests input",
+                          options:
+                            params.choices?.map((choice) => ({
+                              value: choice,
+                              label: choice,
+                              description: choice,
+                            })) ?? [],
+                          allowCustomAnswer: true,
+                        },
+                      ],
+                    },
+                  });
+                  if (
+                    !session.live ||
+                    (!backgroundTurn && activeTurnId !== (yield* Ref.get(session.activeTurnId)))
+                  )
+                    yield* settleInteractions(session, session.live ? activeTurnId : undefined);
+                  return yield* Deferred.await(deferred);
+                }).pipe(
+                  Effect.catch(() =>
+                    Effect.succeed(
+                      params.questions
+                        ? { action: "cancel" }
+                        : { requestId: params.requestId, cancelled: true },
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
+            ),
           },
         }),
         (cause) => adapterError(input.threadId, "Failed to spawn the ZCode app-server", cause),
@@ -1358,47 +1376,49 @@ export const makeZCodeSessionRuntime = (
       },
     );
 
-    const startSession = (input: NativeSessionInput, ownerScope?: Scope.Scope) =>
-      Effect.gen(function* () {
-        const recovery = recoveryInputs.get(input.threadId);
-        if (input.resumeCursor === undefined && recovery !== undefined)
-          input = { ...input, resumeCursor: recovery.resumeCursor };
-        const mode = yield* zcodeModeOrReject(input);
-        const cwd = input.cwd ?? process.cwd();
-        const resumeId = yield* resumeIdFor(input);
-        let session = sessions.get(input.threadId);
-        if (session !== undefined) {
-          const currentId = yield* Ref.get(session.zcodeSessionId);
-          if (
-            session.cwd !== cwd ||
-            session.mode !== mode ||
-            session.runtimeMode !== input.runtimeMode ||
-            (resumeId !== undefined && currentId !== resumeId)
-          ) {
-            return yield* adapterError(
-              input.threadId,
-              "Stop the existing ZCode session before changing its workspace, mode or native identity",
-            );
-          }
-        }
-        if (session === undefined) session = yield* makeAppServerSession(input, mode, ownerScope);
+    const startSession = Effect.fn("ZCodeSessionRuntime.startSession")(function* (
+      input: NativeSessionInput,
+      ownerScope?: Scope.Scope,
+    ) {
+      const recovery = recoveryInputs.get(input.threadId);
+      if (input.resumeCursor === undefined && recovery !== undefined)
+        input = { ...input, resumeCursor: recovery.resumeCursor };
+      const mode = yield* zcodeModeOrReject(input);
+      const cwd = input.cwd ?? process.cwd();
+      const resumeId = yield* resumeIdFor(input);
+      let session = sessions.get(input.threadId);
+      if (session !== undefined) {
         const currentId = yield* Ref.get(session.zcodeSessionId);
-        const started =
-          currentId === undefined
-            ? yield* materializeAppServerSession(session, input).pipe(
-                Effect.onError(() =>
-                  Effect.gen(function* () {
-                    yield* Scope.close(session.scope, Exit.void);
-                    if (sessions.get(input.threadId) === session) sessions.delete(input.threadId);
-                  }),
-                ),
-              )
-            : { resumeCursor: { sessionId: currentId } };
-        if (!session.live)
-          return yield* adapterError(input.threadId, "ZCode app-server terminated during setup");
-        recoveryInputs.delete(input.threadId);
-        return started;
-      });
+        if (
+          session.cwd !== cwd ||
+          session.mode !== mode ||
+          session.runtimeMode !== input.runtimeMode ||
+          (resumeId !== undefined && currentId !== resumeId)
+        ) {
+          return yield* adapterError(
+            input.threadId,
+            "Stop the existing ZCode session before changing its workspace, mode or native identity",
+          );
+        }
+      }
+      if (session === undefined) session = yield* makeAppServerSession(input, mode, ownerScope);
+      const currentId = yield* Ref.get(session.zcodeSessionId);
+      const started =
+        currentId === undefined
+          ? yield* materializeAppServerSession(session, input).pipe(
+              Effect.onError(() =>
+                Effect.gen(function* () {
+                  yield* Scope.close(session.scope, Exit.void);
+                  if (sessions.get(input.threadId) === session) sessions.delete(input.threadId);
+                }),
+              ),
+            )
+          : { resumeCursor: { sessionId: currentId } };
+      if (!session.live)
+        return yield* adapterError(input.threadId, "ZCode app-server terminated during setup");
+      recoveryInputs.delete(input.threadId);
+      return started;
+    });
 
     return ZCodeSessionRuntime.of({
       startSession,
@@ -1576,8 +1596,11 @@ export const makeZCodeSessionRuntime = (
           ),
         );
       },
-      interruptTurn: (threadId: ThreadId, expectedTurnId?: TurnId) =>
-        Effect.gen(function* () {
+      interruptTurn: Effect.fn("ZCodeSessionRuntime.interruptTurn")(function* (
+        threadId: ThreadId,
+        expectedTurnId?: TurnId,
+      ) {
+        return yield* Effect.gen(function* () {
           const session = sessions.get(threadId);
           if (session === undefined) return;
           const turnId = yield* Ref.get(session.activeTurnId);
@@ -1624,9 +1647,10 @@ export const makeZCodeSessionRuntime = (
           }
           session.interrupting = false;
           return tokenUsage;
-        }).pipe(Effect.uninterruptible),
-      respondToRequest: (threadId, requestId, decision, optionId) =>
-        Effect.gen(function* () {
+        }).pipe(Effect.uninterruptible);
+      }),
+      respondToRequest: Effect.fn("ZCodeSessionRuntime.respondToRequest")(
+        function* (threadId, requestId, decision, optionId) {
           const session = sessions.get(threadId);
           if (session === undefined) return;
           const pendingMap = yield* Ref.get(session.pendingApprovals);
@@ -1653,9 +1677,10 @@ export const makeZCodeSessionRuntime = (
                 ...(optionId === undefined ? {} : { optionId }),
               },
             });
-        }),
-      respondToUserInput: (threadId, requestId, answers) =>
-        Effect.gen(function* () {
+        },
+      ),
+      respondToUserInput: Effect.fn("ZCodeSessionRuntime.respondToUserInput")(
+        function* (threadId, requestId, answers) {
           const session = sessions.get(threadId);
           if (session === undefined) return;
           const pendingMap = yield* Ref.get(session.pendingUserInputs);
@@ -1681,129 +1706,125 @@ export const makeZCodeSessionRuntime = (
               requestId: RuntimeRequestId.make(requestId),
               payload: { answers },
             });
-        }),
-      readNativeSnapshot: (threadId) =>
-        Effect.gen(function* () {
-          const session = sessions.get(threadId);
-          if (!session?.live)
-            return yield* adapterError(
-              threadId,
-              "Native snapshot requires a live app-server session",
-            );
-          const sessionId = yield* Ref.get(session.zcodeSessionId);
-          if (!sessionId)
-            return yield* adapterError(threadId, "Native session identity is unavailable");
-          const result = yield* session.spawned.client
-            .request("session/read", { sessionId })
-            .pipe(
-              Effect.mapError((cause) =>
-                adapterError(threadId, "Native session read failed", cause),
-              ),
-            );
-          const snapshot = yield* decodeNativeSnapshot(result).pipe(
+        },
+      ),
+      readNativeSnapshot: Effect.fn("ZCodeSessionRuntime.readNativeSnapshot")(function* (threadId) {
+        const session = sessions.get(threadId);
+        if (!session?.live)
+          return yield* adapterError(
+            threadId,
+            "Native snapshot requires a live app-server session",
+          );
+        const sessionId = yield* Ref.get(session.zcodeSessionId);
+        if (!sessionId)
+          return yield* adapterError(threadId, "Native session identity is unavailable");
+        const result = yield* session.spawned.client
+          .request("session/read", { sessionId })
+          .pipe(
+            Effect.mapError((cause) => adapterError(threadId, "Native session read failed", cause)),
+          );
+        const snapshot = yield* decodeNativeSnapshot(result).pipe(
+          Effect.mapError((cause) =>
+            adapterError(threadId, "Invalid native session snapshot", cause),
+          ),
+        );
+        if (snapshot.session?.sessionId !== sessionId)
+          return yield* adapterError(threadId, "Native snapshot belongs to a different session");
+        return snapshot;
+      }),
+      forkNativeHead: Effect.fn("ZCodeSessionRuntime.forkNativeHead")(function* (threadId) {
+        const session = sessions.get(threadId);
+        if (!session?.live)
+          return yield* adapterError(threadId, "Native fork requires a live app-server session");
+        if ((yield* Ref.get(session.activeTurnId)) !== undefined)
+          return yield* adapterError(threadId, "Cannot fork during an active turn");
+        const sessionId = yield* Ref.get(session.zcodeSessionId);
+        if (!sessionId)
+          return yield* adapterError(threadId, "Native session identity is unavailable");
+        const response = yield* session.spawned.client
+          .request("session/fork", { sessionId })
+          .pipe(
             Effect.mapError((cause) =>
-              adapterError(threadId, "Invalid native session snapshot", cause),
+              adapterError(threadId, "Native checkpoint fork failed", cause),
             ),
           );
-          if (snapshot.session?.sessionId !== sessionId)
-            return yield* adapterError(threadId, "Native snapshot belongs to a different session");
-          return snapshot;
-        }),
-      forkNativeHead: (threadId) =>
-        Effect.gen(function* () {
-          const session = sessions.get(threadId);
-          if (!session?.live)
-            return yield* adapterError(threadId, "Native fork requires a live app-server session");
-          if ((yield* Ref.get(session.activeTurnId)) !== undefined)
-            return yield* adapterError(threadId, "Cannot fork during an active turn");
-          const sessionId = yield* Ref.get(session.zcodeSessionId);
-          if (!sessionId)
-            return yield* adapterError(threadId, "Native session identity is unavailable");
-          const response = yield* session.spawned.client
-            .request("session/fork", { sessionId })
-            .pipe(
-              Effect.mapError((cause) =>
-                adapterError(threadId, "Native checkpoint fork failed", cause),
-              ),
-            );
-          const fork = yield* decodeNativeFork(response).pipe(
-            Effect.mapError((cause) => adapterError(threadId, "Invalid native fork result", cause)),
+        const fork = yield* decodeNativeFork(response).pipe(
+          Effect.mapError((cause) => adapterError(threadId, "Invalid native fork result", cause)),
+        );
+        if (
+          fork.forkedSessionId === sessionId ||
+          fork.snapshot.session?.sessionId !== fork.forkedSessionId ||
+          (fork.parentSessionId !== undefined && fork.parentSessionId !== sessionId)
+        )
+          return yield* adapterError(
+            threadId,
+            "Native fork returned an inconsistent session identity",
           );
-          if (
-            fork.forkedSessionId === sessionId ||
-            fork.snapshot.session?.sessionId !== fork.forkedSessionId ||
-            (fork.parentSessionId !== undefined && fork.parentSessionId !== sessionId)
-          )
-            return yield* adapterError(
-              threadId,
-              "Native fork returned an inconsistent session identity",
-            );
-          // The fork inherits its parent's live MCP handles. Release them before
-          // handing off the durable child to a separately owned T3 session.
-          yield* session.spawned.client
-            .sessionClose({ sessionId: fork.forkedSessionId })
-            .pipe(
-              Effect.mapError((cause) =>
-                adapterError(threadId, "Could not release native fork handles", cause),
-              ),
-            );
-          return fork.forkedSessionId;
-        }),
-      stopSession: (threadId) =>
-        Effect.gen(function* () {
-          recoveryInputs.delete(threadId);
-          const session = sessions.get(threadId);
-          if (session === undefined) return;
-          session.live = false;
-          sessions.delete(threadId);
-          const turnId = yield* Ref.getAndSet(session.activeTurnId, undefined);
-          yield* settleInteractions(session);
-          if (turnId !== undefined)
-            yield* emitFor(session, {
-              type: "turn.aborted",
-              turnId,
-              payload: { reason: "ZCode session closed" },
-            });
-          if (session.spawned !== undefined) {
-            const zcodeSessionId = yield* Ref.get(session.zcodeSessionId);
-            if (zcodeSessionId !== undefined) {
-              yield* session.spawned.client
-                .sessionClose({ sessionId: zcodeSessionId })
-                .pipe(Effect.ignore);
-            }
-            yield* session.spawned.terminate;
+        // The fork inherits its parent's live MCP handles. Release them before
+        // handing off the durable child to a separately owned T3 session.
+        yield* session.spawned.client
+          .sessionClose({ sessionId: fork.forkedSessionId })
+          .pipe(
+            Effect.mapError((cause) =>
+              adapterError(threadId, "Could not release native fork handles", cause),
+            ),
+          );
+        return fork.forkedSessionId;
+      }),
+      stopSession: Effect.fn("ZCodeSessionRuntime.stopSession")(function* (threadId) {
+        recoveryInputs.delete(threadId);
+        const session = sessions.get(threadId);
+        if (session === undefined) return;
+        session.live = false;
+        sessions.delete(threadId);
+        const turnId = yield* Ref.getAndSet(session.activeTurnId, undefined);
+        yield* settleInteractions(session);
+        if (turnId !== undefined)
+          yield* emitFor(session, {
+            type: "turn.aborted",
+            turnId,
+            payload: { reason: "ZCode session closed" },
+          });
+        if (session.spawned !== undefined) {
+          const zcodeSessionId = yield* Ref.get(session.zcodeSessionId);
+          if (zcodeSessionId !== undefined) {
+            yield* session.spawned.client
+              .sessionClose({ sessionId: zcodeSessionId })
+              .pipe(Effect.ignore);
           }
-          yield* Scope.close(session.scope, Exit.void).pipe(Effect.ignore);
-        }),
-      listSessions: () =>
-        Effect.gen(function* () {
-          const snapshots: Array<
-            NativeSessionRef & {
-              threadId: ThreadId;
-              status: "running" | "ready";
-              activeTurnId?: TurnId;
-            }
-          > = [];
-          for (const session of sessions.values()) {
-            if (!session.live) continue;
-            const zcodeSessionId = yield* Ref.get(session.zcodeSessionId);
-            const activeTurnId = yield* Ref.get(session.activeTurnId);
-            const running = activeTurnId !== undefined;
-            snapshots.push({
-              status: running ? ("running" as const) : ("ready" as const),
-              threadId: session.threadId,
-              ...(zcodeSessionId !== undefined
-                ? { resumeCursor: { sessionId: zcodeSessionId } }
-                : {}),
-              ...(activeTurnId !== undefined ? { activeTurnId } : {}),
-            });
+          yield* session.spawned.terminate;
+        }
+        yield* Scope.close(session.scope, Exit.void).pipe(Effect.ignore);
+      }),
+      listSessions: Effect.fn("ZCodeSessionRuntime.listSessions")(function* () {
+        const snapshots: Array<
+          NativeSessionRef & {
+            threadId: ThreadId;
+            status: "running" | "ready";
+            activeTurnId?: TurnId;
           }
-          return snapshots;
-        }),
+        > = [];
+        for (const session of sessions.values()) {
+          if (!session.live) continue;
+          const zcodeSessionId = yield* Ref.get(session.zcodeSessionId);
+          const activeTurnId = yield* Ref.get(session.activeTurnId);
+          const running = activeTurnId !== undefined;
+          snapshots.push({
+            status: running ? ("running" as const) : ("ready" as const),
+            threadId: session.threadId,
+            ...(zcodeSessionId !== undefined
+              ? { resumeCursor: { sessionId: zcodeSessionId } }
+              : {}),
+            ...(activeTurnId !== undefined ? { activeTurnId } : {}),
+          });
+        }
+        return snapshots;
+      }),
       hasSession: (threadId) => Effect.sync(() => sessions.get(threadId)?.live === true),
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     });
-  });
+  },
+);
 
 export const layer = (settings: ZCodeSettings, options: ZCodeSessionRuntimeOptions) =>
   Layer.effect(ZCodeSessionRuntime, makeZCodeSessionRuntime(settings, options));

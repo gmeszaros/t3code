@@ -37,11 +37,11 @@ export function newerLocalRelease(payload: unknown, currentVersion: string): str
 }
 
 /** Local builds advertise downloads; they never stage or install an update. */
-export const make = (
+export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
   initial: DesktopUpdateState,
   send: (state: DesktopUpdateState) => Effect.Effect<void>,
-) =>
-  Effect.gen(function* () {
+) {
+  return yield* Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const state = yield* Ref.make(initial);
     const changes = yield* PubSub.sliding<DesktopUpdateState>(16);
@@ -54,46 +54,45 @@ export const make = (
           Effect.andThen(send(next)),
         ),
       );
-    const check = (_reason: string) =>
-      Effect.gen(function* () {
-        if (!initial.enabled) return { checked: false, state: yield* Ref.get(state) };
-        const reserved = yield* Ref.getAndSet(busy, true);
-        if (reserved) return { checked: false, state: yield* Ref.get(state) };
-        return yield* Effect.gen(function* () {
-          const previous = yield* Ref.get(state);
-          const checkedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-          yield* publish({ ...previous, status: "checking", checkedAt, message: null });
-          const result = yield* Effect.gen(function* () {
-            const response = yield* client.get(RELEASE_API, {
-              headers: { Accept: "application/vnd.github+json" },
-            });
-            if (response.status === 404) return null;
-            if (response.status !== 200) return yield* Effect.fail("Release check failed");
-            const payload = yield* response.json;
-            return yield* Effect.try(() => newerLocalRelease(payload, initial.currentVersion));
-          }).pipe(
-            Effect.timeout("15 seconds"),
-            Effect.match({
-              onFailure: () => ({
-                message: "Could not check Local releases. Try again later.",
-                version: null,
-              }),
-              onSuccess: (version) => ({ message: null, version }),
+    const check = Effect.fn("LocalReleaseUpdates.check")(function* (_reason: string) {
+      if (!initial.enabled) return { checked: false, state: yield* Ref.get(state) };
+      const reserved = yield* Ref.getAndSet(busy, true);
+      if (reserved) return { checked: false, state: yield* Ref.get(state) };
+      return yield* Effect.gen(function* () {
+        const previous = yield* Ref.get(state);
+        const checkedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+        yield* publish({ ...previous, status: "checking", checkedAt, message: null });
+        const result = yield* Effect.gen(function* () {
+          const response = yield* client.get(RELEASE_API, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (response.status === 404) return null;
+          if (response.status !== 200) return yield* Effect.fail("Release check failed");
+          const payload = yield* response.json;
+          return yield* Effect.try(() => newerLocalRelease(payload, initial.currentVersion));
+        }).pipe(
+          Effect.timeout("15 seconds"),
+          Effect.match({
+            onFailure: () => ({
+              message: "Could not check Local releases. Try again later.",
+              version: null,
             }),
-          );
-          const next: DesktopUpdateState = {
-            ...previous,
-            checkedAt,
-            status: result.message ? "error" : result.version ? "available" : "up-to-date",
-            availableVersion: result.message ? previous.availableVersion : result.version,
-            message: result.message,
-            errorContext: result.message ? "check" : null,
-            canRetry: result.message !== null,
-          };
-          yield* publish(next);
-          return { checked: result.message === null, state: next };
-        }).pipe(Effect.ensuring(Ref.set(busy, false)));
-      });
+            onSuccess: (version) => ({ message: null, version }),
+          }),
+        );
+        const next: DesktopUpdateState = {
+          ...previous,
+          checkedAt,
+          status: result.message ? "error" : result.version ? "available" : "up-to-date",
+          availableVersion: result.message ? previous.availableVersion : result.version,
+          message: result.message,
+          errorContext: result.message ? "check" : null,
+          canRetry: result.message !== null,
+        };
+        yield* publish(next);
+        return { checked: result.message === null, state: next };
+      }).pipe(Effect.ensuring(Ref.set(busy, false)));
+    });
     const refuseInstall = Ref.get(state).pipe(
       Effect.map((state) => ({
         accepted: false,
@@ -134,3 +133,4 @@ export const make = (
         refuseInstall.pipe(Effect.map((result) => ({ ...result, failed: true }))),
     } satisfies DesktopUpdates["Service"];
   }).pipe(Effect.provide(FetchHttpClient.layer));
+});

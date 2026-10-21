@@ -314,7 +314,7 @@ layer("066_RepairClientSettlementTimestamps", (it) => {
       `;
       const overridesBefore = yield* overrides;
 
-      yield* runMigrations({ toMigrationInclusive: 66 });
+      yield* runMigrations({ toMigrationInclusive: 67 });
       const legacy = yield* sql`
         SELECT thread_id, settled_override, settled_at FROM projection_threads
         WHERE thread_id LIKE 'sweep-%' ORDER BY thread_id
@@ -359,7 +359,7 @@ layer("066_RepairClientSettlementTimestamps", (it) => {
         sql`SELECT * FROM orchestration_events ORDER BY sequence`,
       ]);
       const repaired = yield* snapshot;
-      assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 66 }), []);
+      assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 67 }), []);
       yield* Migration0066;
       assert.deepEqual(yield* snapshot, repaired);
 

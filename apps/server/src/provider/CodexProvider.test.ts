@@ -154,7 +154,7 @@ it("ignores custom models that shadow a preferred slug", () => {
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
 
-it("prefers GPT-6.1-Sol and defaults its reasoning to medium", () => {
+it("prefers GPT-6.1-Sol and preserves its advertised low reasoning default", () => {
   const models = applyPreferredCodexDefaultModel([
     {
       slug: "gpt-6-astra",
@@ -185,6 +185,6 @@ it("prefers GPT-6.1-Sol and defaults its reasoning to medium", () => {
   });
   assert.equal(
     caps.optionDescriptors?.find((option) => option.id === "reasoningEffort")?.currentValue,
-    "medium",
+    "low",
   );
 });

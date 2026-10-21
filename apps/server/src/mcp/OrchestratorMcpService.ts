@@ -1290,12 +1290,24 @@ const make = Effect.gen(function* () {
       const healthyCandidates = candidates.filter(
         (candidate) => providerConstraints(candidate, true).length === 0,
       );
-      const inheritedCandidate = healthyCandidates.find(
+      const modelCandidates = healthyCandidates.filter(
+        (candidate) =>
+          input.target?.model === undefined ||
+          candidate.models.length === 0 ||
+          candidate.models.some((model) => model.slug === input.target?.model),
+      );
+      if (healthyCandidates.length > 0 && modelCandidates.length === 0) {
+        return yield* failure(
+          "model_unavailable",
+          `Model ${input.target?.model} is not advertised by any available provider for driver ${requestedDriver}.`,
+        );
+      }
+      const inheritedCandidate = modelCandidates.find(
         (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
       );
       const orderedCandidates = [
         ...(inheritedCandidate === undefined ? [] : [inheritedCandidate]),
-        ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
+        ...modelCandidates.filter((candidate) => candidate !== inheritedCandidate),
       ];
       for (const candidate of orderedCandidates) {
         const enabledForProject =
