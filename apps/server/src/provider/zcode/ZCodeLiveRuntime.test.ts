@@ -75,7 +75,6 @@ it.live.skipIf(process.env.T3CODE_ZCODE_PROTOCOL_SMOKE !== "1")(
       yield* spawned.terminate;
       expect(() => process.kill(childPid!, 0)).toThrow();
     }).pipe(Effect.timeout("30 seconds"), Effect.scoped, Effect.provide(NodeServices.layer)),
-  { timeout: 40_000 },
 );
 
 it.layer(NodeServices.layer)("ZCode app-server client (live runtime)", (it) => {
@@ -146,6 +145,5 @@ it.layer(NodeServices.layer)("ZCode app-server client (live runtime)", (it) => {
 
         yield* spawned.terminate;
       }).pipe(Effect.scoped),
-    { timeout: 120_000 },
   );
 });

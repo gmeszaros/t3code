@@ -65,31 +65,27 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const redeem: ResetCreditCoordinator["Service"]["redeem"] = (
-    accountKey,
-    consume,
-    isSettled,
-    stableKey,
-  ) =>
-    Effect.gen(function* () {
-      const state = yield* stateFor(accountKey);
-      return yield* state.lock.withPermits(1)(
-        Effect.gen(function* () {
-          const existing = yield* Ref.get(state.pendingKey);
-          const idempotencyKey = stableKey ?? existing ?? (yield* crypto.randomUUIDv4());
-          if (stableKey === undefined) yield* Ref.set(state.pendingKey, idempotencyKey);
-          const outcome = yield* consume(idempotencyKey).pipe(
-            Effect.tapError((error) =>
-              stableKey === undefined && (isSettled?.(error) ?? false)
-                ? Ref.set(state.pendingKey, null)
-                : Effect.void,
-            ),
-          );
-          if (stableKey === undefined) yield* Ref.set(state.pendingKey, null);
-          return outcome;
-        }),
-      );
-    });
+  const redeem: ResetCreditCoordinator["Service"]["redeem"] = Effect.fn(
+    "ResetCreditCoordinator.redeem",
+  )(function* (accountKey, consume, isSettled, stableKey) {
+    const state = yield* stateFor(accountKey);
+    return yield* state.lock.withPermits(1)(
+      Effect.gen(function* () {
+        const existing = yield* Ref.get(state.pendingKey);
+        const idempotencyKey = stableKey ?? existing ?? (yield* crypto.randomUUIDv4());
+        if (stableKey === undefined) yield* Ref.set(state.pendingKey, idempotencyKey);
+        const outcome = yield* consume(idempotencyKey).pipe(
+          Effect.tapError((error) =>
+            stableKey === undefined && (isSettled?.(error) ?? false)
+              ? Ref.set(state.pendingKey, null)
+              : Effect.void,
+          ),
+        );
+        if (stableKey === undefined) yield* Ref.set(state.pendingKey, null);
+        return outcome;
+      }),
+    );
+  });
 
   return { redeem } satisfies ResetCreditCoordinator["Service"];
 });

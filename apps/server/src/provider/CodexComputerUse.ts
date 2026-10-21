@@ -76,43 +76,42 @@ export const watchCodexComputerUse = Effect.fn("watchCodexComputerUse")(function
     ),
   );
 
-  const closeOwner = (key: string) =>
-    Effect.gen(function* () {
-      const owner = pending.get(key);
-      if (!owner) return;
-      const executable = yield* command;
-      if (!executable) {
-        pending.delete(key);
-        return;
-      }
-      // Do not replay --previous-notify: this is native session cleanup, not another
-      // user notification. Preserve the exact native thread and turn identity.
-      const payload = encodeCompletion({
-        type: "agent-turn-complete",
-        "thread-id": owner.threadId,
-        "turn-id": owner.turnId,
-        cwd: input.cwd,
-        client: buildCodexInitializeParams().clientInfo.name,
-        "input-messages": [],
-        "last-assistant-message": null,
-      });
-      const delivered = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const child = yield* spawner.spawn(
-            ChildProcess.make(executable, ["turn-ended", payload], {
-              env: input.environment,
-              stdin: "ignore",
-              stdout: "ignore",
-              stderr: "ignore",
-              forceKillAfter: "1 second",
-            }),
-          );
-          return (yield* child.exitCode) === 0;
-        }).pipe(Effect.timeout("2 seconds")),
-      ).pipe(Effect.catch(() => Effect.succeed(false)));
-      if (delivered) pending.delete(key);
-      else yield* Effect.logWarning("Native Codex computer-use cleanup failed.", owner);
+  const closeOwner = Effect.fn("CodexComputerUse.closeOwner")(function* (key: string) {
+    const owner = pending.get(key);
+    if (!owner) return;
+    const executable = yield* command;
+    if (!executable) {
+      pending.delete(key);
+      return;
+    }
+    // Do not replay --previous-notify: this is native session cleanup, not another
+    // user notification. Preserve the exact native thread and turn identity.
+    const payload = encodeCompletion({
+      type: "agent-turn-complete",
+      "thread-id": owner.threadId,
+      "turn-id": owner.turnId,
+      cwd: input.cwd,
+      client: buildCodexInitializeParams().clientInfo.name,
+      "input-messages": [],
+      "last-assistant-message": null,
     });
+    const delivered = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const child = yield* spawner.spawn(
+          ChildProcess.make(executable, ["turn-ended", payload], {
+            env: input.environment,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+            forceKillAfter: "1 second",
+          }),
+        );
+        return (yield* child.exitCode) === 0;
+      }).pipe(Effect.timeout("2 seconds")),
+    ).pipe(Effect.catch(() => Effect.succeed(false)));
+    if (delivered) pending.delete(key);
+    else yield* Effect.logWarning("Native Codex computer-use cleanup failed.", owner);
+  });
 
   const closeAll = Effect.gen(function* () {
     stopped = true;

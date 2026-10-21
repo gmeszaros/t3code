@@ -122,47 +122,46 @@ export const makeZCodeProtocol = Effect.fn("effect-zcode-app-server/makeZCodePro
       ] as const;
     }).pipe(Effect.flatten, Effect.uninterruptible);
 
-  const offerOutgoing = (
+  const offerOutgoing = Effect.fn("ZCodeProtocolConnection.offerOutgoing")(function* (
     message: Record<string, unknown>,
-  ): Effect.Effect<void, ZCodeError.ZCodeAppServerError> =>
-    Effect.gen(function* () {
-      const failure = yield* Ref.get(terminationFailure);
-      if (Option.isSome(failure)) return yield* failure.value;
-      const result = message.result;
-      const authentication = isObject(result) && ("requestAuth" in result || "headers" in result);
-      const mcpConfiguration = isObject(message.params) && "mcpServers" in message.params;
-      const sensitive = authentication || mcpConfiguration;
-      yield* logProtocol({
-        direction: "outgoing",
-        stage: "raw",
-        payload: authentication
-          ? { ...message, result: "[REDACTED native authentication response]" }
-          : mcpConfiguration
-            ? { ...message, params: "[REDACTED MCP session configuration]" }
-            : message,
-      });
-      const encoded = yield* encodeJsonMessage(message).pipe(
-        Effect.mapError(
-          (cause): ZCodeError.ZCodeAppServerError =>
-            new ZCodeError.ZCodeAppServerProtocolParseError({
-              operation: "encode-wire-message",
-              ...(typeof message.method === "string" ? { method: message.method } : {}),
-              detail: "Message is not JSON-serializable",
-              cause: sensitive
-                ? new Error("Sensitive native protocol message could not be encoded")
-                : cause,
-            }),
-        ),
-      );
-      const accepted = yield* Queue.offer(outgoing, `${encoded}\n`);
-      if (!accepted) {
-        const closed = yield* Ref.get(terminationFailure);
-        return yield* Option.getOrElse(
-          closed,
-          (): ZCodeError.ZCodeAppServerError => new ZCodeError.ZCodeAppServerProcessExitedError({}),
-        );
-      }
+  ): Effect.fn.Return<void, ZCodeError.ZCodeAppServerError> {
+    const failure = yield* Ref.get(terminationFailure);
+    if (Option.isSome(failure)) return yield* failure.value;
+    const result = message.result;
+    const authentication = isObject(result) && ("requestAuth" in result || "headers" in result);
+    const mcpConfiguration = isObject(message.params) && "mcpServers" in message.params;
+    const sensitive = authentication || mcpConfiguration;
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "raw",
+      payload: authentication
+        ? { ...message, result: "[REDACTED native authentication response]" }
+        : mcpConfiguration
+          ? { ...message, params: "[REDACTED MCP session configuration]" }
+          : message,
     });
+    const encoded = yield* encodeJsonMessage(message).pipe(
+      Effect.mapError(
+        (cause): ZCodeError.ZCodeAppServerError =>
+          new ZCodeError.ZCodeAppServerProtocolParseError({
+            operation: "encode-wire-message",
+            ...(typeof message.method === "string" ? { method: message.method } : {}),
+            detail: "Message is not JSON-serializable",
+            cause: sensitive
+              ? new Error("Sensitive native protocol message could not be encoded")
+              : cause,
+          }),
+      ),
+    );
+    const accepted = yield* Queue.offer(outgoing, `${encoded}\n`);
+    if (!accepted) {
+      const closed = yield* Ref.get(terminationFailure);
+      return yield* Option.getOrElse(
+        closed,
+        (): ZCodeError.ZCodeAppServerError => new ZCodeError.ZCodeAppServerProcessExitedError({}),
+      );
+    }
+  });
 
   const removePending = (requestId: number) =>
     Ref.update(pending, (current) => {
@@ -356,25 +355,23 @@ export const makeZCodeProtocol = Effect.fn("effect-zcode-app-server/makeZCodePro
     Effect.forkScoped,
   );
 
-  const request = (method: string, params?: unknown) =>
-    Effect.gen(function* () {
-      const requestId = yield* Ref.modify(
-        nextRequestId,
-        (current) => [current, current + 1] as const,
-      );
-      const deferred = yield* Deferred.make<unknown, ZCodeError.ZCodeAppServerError>();
-      yield* Ref.update(pending, (current) =>
-        new Map(current).set(requestId, { deferred, method }),
-      );
-      yield* offerOutgoing({
-        id: requestId,
-        method,
-        ...(params !== undefined ? { params } : {}),
-      }).pipe(Effect.tapError(() => removePending(requestId)));
-      return yield* Deferred.await(deferred).pipe(
-        Effect.onInterrupt(() => removePending(requestId)),
-      );
-    });
+  const request = Effect.fn("ZCodeProtocolConnection.request")(function* (
+    method: string,
+    params?: unknown,
+  ) {
+    const requestId = yield* Ref.modify(
+      nextRequestId,
+      (current) => [current, current + 1] as const,
+    );
+    const deferred = yield* Deferred.make<unknown, ZCodeError.ZCodeAppServerError>();
+    yield* Ref.update(pending, (current) => new Map(current).set(requestId, { deferred, method }));
+    yield* offerOutgoing({
+      id: requestId,
+      method,
+      ...(params !== undefined ? { params } : {}),
+    }).pipe(Effect.tapError(() => removePending(requestId)));
+    return yield* Deferred.await(deferred).pipe(Effect.onInterrupt(() => removePending(requestId)));
+  });
 
   return {
     incomingNotifications: Stream.fromQueue(incomingNotifications),

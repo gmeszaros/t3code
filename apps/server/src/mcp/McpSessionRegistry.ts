@@ -62,9 +62,9 @@ export interface McpSessionRegistryOptions {
 }
 
 /**
- * The bound matters because `/mcp` is mounted outside the environment auth
- * stack and is reachable on whatever host the server binds to, so this token is
- * the only thing guarding the `t3-code` toolkits on a remote-reachable server.
+ * `/mcp` is outside environment auth, so idle tokens stop authenticating.
+ * Keep expired records until explicit revocation: a trusted provider turn can
+ * refresh the token its subprocess still holds; MCP requests cannot.
  */
 const DEFAULT_LIVENESS_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
@@ -98,15 +98,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .digest("SHA-256", new TextEncoder().encode(token))
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
-  const pruneDead = (records: ReadonlyMap<string, CredentialRecord>, timestamp: number) => {
-    const next = new Map(
-      Array.from(records).filter(
-        ([, record]) => timestamp - record.lastAliveAt <= livenessWindowMs,
-      ),
-    );
-    return next.size === records.size ? records : next;
-  };
-
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
@@ -132,7 +123,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(pruneDead(records, issuedAt));
+        const next = new Map(records);
         next.set(tokenHash, { tokenHash, scope, lastAliveAt: issuedAt });
         return { records: next };
       });
@@ -157,10 +148,11 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
       return yield* SynchronizedRef.modify(state, ({ records }) => {
-        const current = pruneDead(records, timestamp);
-        const record = current.get(tokenHash);
-        if (!record) return [undefined, { records: current }] as const;
-        const next = new Map(current);
+        const record = records.get(tokenHash);
+        if (!record || timestamp - record.lastAliveAt > livenessWindowMs) {
+          return [undefined, { records }] as const;
+        }
+        const next = new Map(records);
         next.set(tokenHash, { ...record, lastAliveAt: timestamp });
         return [record.scope, { records: next }] as const;
       });
@@ -171,9 +163,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     function* (threadId) {
       const timestamp = yield* currentTimeMillis;
       yield* SynchronizedRef.update(state, ({ records }) => {
-        const current = pruneDead(records, timestamp);
-        const next = new Map(current);
-        for (const [tokenHash, record] of current) {
+        const next = new Map(records);
+        for (const [tokenHash, record] of records) {
           if (record.scope.thread.threadId === threadId) {
             next.set(tokenHash, { ...record, lastAliveAt: timestamp });
           }
@@ -195,28 +186,29 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       ).pipe(Effect.as([undefined, { records: next }] as const));
     });
 
-  const awaitRevocation = (rawToken: string) =>
-    Effect.gen(function* () {
-      const hash = yield* hashToken(rawToken);
-      const waiter = yield* Deferred.make<void>();
-      yield* SynchronizedRef.modifyEffect(state, (current) => {
-        if (!current.records.has(hash))
-          return Deferred.succeed(waiter, undefined).pipe(Effect.as([undefined, current] as const));
-        const waiters = revocationWaiters.get(hash) ?? new Set();
-        waiters.add(waiter);
-        revocationWaiters.set(hash, waiters);
-        return Effect.succeed([undefined, current] as const);
-      });
-      yield* Deferred.await(waiter).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            const waiters = revocationWaiters.get(hash);
-            waiters?.delete(waiter);
-            if (waiters?.size === 0) revocationWaiters.delete(hash);
-          }),
-        ),
-      );
+  const awaitRevocation = Effect.fn("McpSessionRegistry.awaitRevocation")(function* (
+    rawToken: string,
+  ) {
+    const hash = yield* hashToken(rawToken);
+    const waiter = yield* Deferred.make<void>();
+    yield* SynchronizedRef.modifyEffect(state, (current) => {
+      if (!current.records.has(hash))
+        return Deferred.succeed(waiter, undefined).pipe(Effect.as([undefined, current] as const));
+      const waiters = revocationWaiters.get(hash) ?? new Set();
+      waiters.add(waiter);
+      revocationWaiters.set(hash, waiters);
+      return Effect.succeed([undefined, current] as const);
     });
+    yield* Deferred.await(waiter).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          const waiters = revocationWaiters.get(hash);
+          waiters?.delete(waiter);
+          if (waiters?.size === 0) revocationWaiters.delete(hash);
+        }),
+      ),
+    );
+  });
 
   return McpSessionRegistry.of({
     issue,
@@ -254,15 +246,6 @@ const make = Effect.acquireRelease(
 );
 
 export const layer = Layer.effect(McpSessionRegistry, make);
-
-export const issueActiveMcpCredential = (
-  request: McpCredentialRequest,
-): Effect.Effect<McpIssuedCredential | undefined> =>
-  activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
-    : Effect.undefined;
 
 export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.touch(threadId) : Effect.void;

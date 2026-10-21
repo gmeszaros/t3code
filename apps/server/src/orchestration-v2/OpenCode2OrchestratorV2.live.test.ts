@@ -20,6 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe } from "vite-plus/test";
@@ -224,19 +225,16 @@ const waitFor = Effect.fn("OpenCode2Live.waitFor")(function* (
   done: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  for (let attempt = 0; attempt < STEP_WAIT_SECONDS * 2; attempt += 1) {
-    const projection = yield* orchestrator.getThreadProjection(threadId);
-    if (done(projection)) return projection;
-    yield* Effect.sleep("500 millis");
-  }
-  const last = yield* orchestrator.getThreadProjection(threadId);
-  const items = last.turnItems.map((item) =>
-    item.type === "error" ? `error:${item.failure.message}` : `${item.type}:${item.status}`,
-  );
-  return yield* Effect.die(
-    new Error(
-      `Timed out waiting on OpenCode 2 thread ${threadId}: runs ${last.runs.map((run) => run.status).join(",")}; items ${items.join(",")}`,
+  return yield* orchestrator.streamStoredEvents.pipe(
+    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+    Stream.filter(done),
+    Stream.runHead,
+    Effect.flatMap((result) =>
+      result._tag === "Some"
+        ? Effect.succeed(result.value)
+        : Effect.die(new Error(`Event stream ended waiting on OpenCode 2 thread ${threadId}`)),
     ),
+    Effect.timeout(`${STEP_WAIT_SECONDS} seconds`),
   );
 });
 
@@ -660,14 +658,22 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             projection.subagents[0] !== undefined &&
             projection.subagents[0].status !== "running",
         );
-        yield* Effect.sleep("5 seconds");
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* worker.drain();
         const final = yield* orchestrator.getThreadProjection(stopThread);
         assert.lengthOf(final.runs, 1);
         assert.equal(final.subagents[0]?.status, "interrupted");
         assert.isFalse(
           final.turnItems.some((item) => item.status === "running" || item.status === "waiting"),
         );
-        const stoppedChild = yield* childOf(final);
+        const stoppedChild = yield* waitFor(
+          final.subagents[0]!.childThreadId!,
+          (projection) =>
+            settled(projection) &&
+            projection.turnItems.every(
+              (item) => item.status !== "running" && item.status !== "waiting",
+            ),
+        );
         assert.isFalse(
           stoppedChild.turnItems.some((item) => item.status === "running"),
           "the stopped child shows nothing running",

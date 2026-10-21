@@ -447,244 +447,231 @@ const make = Effect.gen(function* () {
   });
 
   return ResetCreditRequests.of({
-    answer: (input) =>
-      Effect.gen(function* () {
-        const records = yield* threadManagement
-          .getThreadRecords(input.threadId, ["runs", "turnItems"], {
-            turnItemTypes: ["reset_credit_request"],
-            messageRoles: [],
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) => new ResetCreditRequestError({ reason: "load_failed", cause }),
-            ),
-          );
-        const item = records.turnItems.find((candidate) => candidate.id === input.turnItemId);
-        if (item?.type !== "reset_credit_request" || item.runId === null || item.nodeId === null) {
-          return yield* new ResetCreditRequestError({ reason: "not_found" });
-        }
-        if (item.requestStatus !== "pending") {
-          return yield* new ResetCreditRequestError({ reason: "already_answered" });
-        }
-        // The agent is waiting inside the run that asked; once it has ended,
-        // nobody will act on the answer, so it takes none.
-        const run = records.runs.find((candidate) => candidate.id === item.runId);
-        if (run === undefined || ThreadManagementService.isTerminalRunStatus(run.status)) {
-          return yield* new ResetCreditRequestError({ reason: "agent_stopped" });
-        }
-        yield* threadManagement
-          .dispatch({
-            type: "reset_credit_request.record",
-            commandId: CommandId.make(
-              `${ITEM_PREFIX}:${item.id}:${input.answer.type === "approve" ? "approved" : "declined"}`,
-            ),
-            threadId: input.threadId,
-            runId: item.runId,
-            nodeId: item.nodeId,
-            turnItemId: item.id,
-            label: item.label,
-            reason: item.reason,
-            providerInstanceId: item.providerInstanceId,
-            resetWindowId: item.resetWindowId,
-            ...(item.resetAccountIdentity === undefined
-              ? {}
-              : { resetAccountIdentity: item.resetAccountIdentity }),
-            requestStatus: input.answer.type === "approve" ? "approved" : "declined",
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) => new ResetCreditRequestError({ reason: "record_failed", cause }),
-            ),
-          );
-      }).pipe(Effect.withSpan("ResetCreditRequests.answer")),
+    answer: Effect.fn("ResetCreditRequests.answer")(function* (input) {
+      const records = yield* threadManagement
+        .getThreadRecords(input.threadId, ["runs", "turnItems"], {
+          turnItemTypes: ["reset_credit_request"],
+          messageRoles: [],
+        })
+        .pipe(
+          Effect.mapError((cause) => new ResetCreditRequestError({ reason: "load_failed", cause })),
+        );
+      const item = records.turnItems.find((candidate) => candidate.id === input.turnItemId);
+      if (item?.type !== "reset_credit_request" || item.runId === null || item.nodeId === null) {
+        return yield* new ResetCreditRequestError({ reason: "not_found" });
+      }
+      if (item.requestStatus !== "pending") {
+        return yield* new ResetCreditRequestError({ reason: "already_answered" });
+      }
+      // The agent is waiting inside the run that asked; once it has ended,
+      // nobody will act on the answer, so it takes none.
+      const run = records.runs.find((candidate) => candidate.id === item.runId);
+      if (run === undefined || ThreadManagementService.isTerminalRunStatus(run.status)) {
+        return yield* new ResetCreditRequestError({ reason: "agent_stopped" });
+      }
+      yield* threadManagement
+        .dispatch({
+          type: "reset_credit_request.record",
+          commandId: CommandId.make(
+            `${ITEM_PREFIX}:${item.id}:${input.answer.type === "approve" ? "approved" : "declined"}`,
+          ),
+          threadId: input.threadId,
+          runId: item.runId,
+          nodeId: item.nodeId,
+          turnItemId: item.id,
+          label: item.label,
+          reason: item.reason,
+          providerInstanceId: item.providerInstanceId,
+          resetWindowId: item.resetWindowId,
+          ...(item.resetAccountIdentity === undefined
+            ? {}
+            : { resetAccountIdentity: item.resetAccountIdentity }),
+          requestStatus: input.answer.type === "approve" ? "approved" : "declined",
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new ResetCreditRequestError({ reason: "record_failed", cause }),
+          ),
+        );
+    }),
 
-    request: ({ input, providerInstanceId, requestNamespace, threadId }) =>
-      Effect.gen(function* () {
-        const identity = identityFor({
-          requestNamespace,
-          threadId,
-          clientRequestId: input.clientRequestId ?? "default",
-        });
-        // One in-flight flow per card: a concurrent duplicate queues here and
-        // then reads the settled answer instead of asking or redeeming again.
-        return yield* locks.withLock(
-          identity.turnItemId,
-          Effect.gen(function* () {
-            const existing = yield* loadCard(threadId, identity.turnItemId).pipe(
-              Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
-            );
-            if (existing !== null && existing.providerInstanceId !== providerInstanceId) {
+    request: Effect.fn("ResetCreditRequests.request")(function* ({
+      input,
+      providerInstanceId,
+      requestNamespace,
+      threadId,
+    }) {
+      const identity = identityFor({
+        requestNamespace,
+        threadId,
+        clientRequestId: input.clientRequestId ?? "default",
+      });
+      // One in-flight flow per card: a concurrent duplicate queues here and
+      // then reads the settled answer instead of asking or redeeming again.
+      return yield* locks.withLock(
+        identity.turnItemId,
+        Effect.gen(function* () {
+          const existing = yield* loadCard(threadId, identity.turnItemId).pipe(
+            Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
+          );
+          if (existing !== null && existing.providerInstanceId !== providerInstanceId) {
+            return {
+              status: "unavailable",
+              verifiedRecovery: false,
+              resetWindowId: existing.resetWindowId,
+              note: "This request belongs to another provider instance; its approval cannot be reused.",
+            } satisfies ProviderQuotaResetRequestResult;
+          }
+          const currentRoute = yield* threadManagement.getThreadRecords(threadId, []).pipe(
+            Effect.map((records) => records.thread.providerInstanceId),
+            Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
+          );
+          if (currentRoute !== providerInstanceId) {
+            return {
+              status: "unavailable",
+              verifiedRecovery: false,
+              note: "The thread provider changed; no approval or reset was reused.",
+            } satisfies ProviderQuotaResetRequestResult;
+          }
+          const inventory = yield* readInventory(providerInstanceId);
+          const metadata = inventoryFields(inventory);
+          const scheduleNote = quotaScheduleNote(inventory);
+          if (existing !== null && settledConfirmed(existing)) {
+            return { ...cardResult(existing), ...metadata };
+          }
+          const askingRun = yield* loadAskingRun(threadId);
+          if (
+            askingRun === undefined ||
+            askingRun.rootNodeId === null ||
+            (existing !== null && existing.runId !== askingRun.id)
+          ) {
+            if (existing?.requestStatus === "approved")
+              return { ...cardResult(existing), ...metadata };
+            if (existing !== null)
               return {
-                status: "unavailable",
+                status: "approval_cancelled",
                 verifiedRecovery: false,
                 resetWindowId: existing.resetWindowId,
-                note: "This request belongs to another provider instance; its approval cannot be reused.",
+                ...metadata,
               } satisfies ProviderQuotaResetRequestResult;
-            }
-            const currentRoute = yield* threadManagement.getThreadRecords(threadId, []).pipe(
-              Effect.map((records) => records.thread.providerInstanceId),
-              Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
-            );
-            if (currentRoute !== providerInstanceId) {
+            return yield* new ResetCreditRequestThreadInactiveError({ threadId });
+          }
+          const run: AskingRun = { id: askingRun.id, nodeId: askingRun.rootNodeId };
+          if (existing?.requestStatus === "approved" && existing.outcome === undefined) {
+            return {
+              ...cardResult(existing),
+              ...metadata,
+              note: "Approval was preserved without an attempt record. No POST was retried: reconcile the account before approving another reset.",
+            };
+          }
+          if (existing?.requestStatus === "approved" && existing.outcome === "unconfirmed") {
+            return {
+              ...cardResult(existing),
+              ...metadata,
+              note: "The earlier redemption is uncertain. No POST was retried: provider key retention is undocumented. Check the account before approving any new reset.",
+            };
+          }
+          let resetAccountIdentity = existing?.resetAccountIdentity;
+          const windows = inventory.resetCreditWindows;
+          const windowId = existing?.resetWindowId ?? resolveWindow(input.resetWindowId, windows);
+
+          // A new card asks; a pending replay rejoins its wait. The
+          // availability gates run only for a new card: an existing card
+          // already passed them when it was asked, and an approval, once
+          // given, has already spent the user's decision.
+          if (existing === null || existing.requestStatus === "pending") {
+            const instance = yield* providerInstances.getInstance(providerInstanceId);
+            if (existing === null && (instance === undefined || !instance.enabled)) {
               return {
-                status: "unavailable",
+                status: "unsupported",
                 verifiedRecovery: false,
-                note: "The thread provider changed; no approval or reset was reused.",
+                ...metadata,
+                ...(windowId === "five_hour" || windowId === "weekly"
+                  ? { resetWindowId: windowId }
+                  : {}),
+                note:
+                  instance === undefined
+                    ? "The calling thread's provider instance could not be found."
+                    : "This provider instance is disabled, so nothing can be redeemed on it.",
               } satisfies ProviderQuotaResetRequestResult;
             }
-            const inventory = yield* readInventory(providerInstanceId);
-            const metadata = inventoryFields(inventory);
-            const scheduleNote = quotaScheduleNote(inventory);
-            if (existing !== null && settledConfirmed(existing)) {
-              return { ...cardResult(existing), ...metadata };
+            if (instance?.consumeResetCredit === undefined) {
+              return {
+                status: "unsupported",
+                verifiedRecovery: false,
+                ...metadata,
+                note: "This provider does not bank reset credits.",
+              } satisfies ProviderQuotaResetRequestResult;
             }
-            const askingRun = yield* loadAskingRun(threadId);
+            if (instance.driverKind !== "zcode") {
+              return {
+                status: "unsupported",
+                verifiedRecovery: false,
+                ...metadata,
+                note: `Agent-requested resets currently support the ZCode driver only, not ${instance.driverKind}.`,
+              } satisfies ProviderQuotaResetRequestResult;
+            }
+            if (inventory.resetCreditWindowsUnavailable !== undefined || windows === undefined) {
+              return {
+                status:
+                  inventory.resetCreditWindowsUnavailable?.reason === "probeFailed"
+                    ? "error"
+                    : "unavailable",
+                verifiedRecovery: false,
+                ...metadata,
+                note: scheduleNote ?? "Banked reset inventory is unavailable; nothing was asked.",
+              } satisfies ProviderQuotaResetRequestResult;
+            }
+            if (windowId === "none" || windowId === "ambiguous") {
+              return {
+                status: windowId === "none" ? "no_credit_available" : "window_ambiguous",
+                verifiedRecovery: false,
+                ...metadata,
+                ...(windows === undefined ? {} : { resetCreditWindows: [...windows] }),
+                note:
+                  windowId === "none"
+                    ? "The account banks no usable reset credit for either window, so nothing was asked."
+                    : "Pass resetWindowId to choose the window whose reset credit to redeem.",
+              } satisfies ProviderQuotaResetRequestResult;
+            }
+
+            const accountIdentity =
+              instance.resetCreditAccountIdentity === undefined
+                ? undefined
+                : yield* instance.resetCreditAccountIdentity.pipe(
+                    Effect.orElseSucceed(() => undefined),
+                  );
             if (
-              askingRun === undefined ||
-              askingRun.rootNodeId === null ||
-              (existing !== null && existing.runId !== askingRun.id)
+              accountIdentity === undefined ||
+              (existing !== null && resetAccountIdentity !== accountIdentity)
             ) {
-              if (existing?.requestStatus === "approved")
-                return { ...cardResult(existing), ...metadata };
               if (existing !== null)
-                return {
-                  status: "approval_cancelled",
-                  verifiedRecovery: false,
-                  resetWindowId: existing.resetWindowId,
-                  ...metadata,
-                } satisfies ProviderQuotaResetRequestResult;
-              return yield* new ResetCreditRequestThreadInactiveError({ threadId });
-            }
-            const run: AskingRun = { id: askingRun.id, nodeId: askingRun.rootNodeId };
-            if (existing?.requestStatus === "approved" && existing.outcome === undefined) {
-              return {
-                ...cardResult(existing),
-                ...metadata,
-                note: "Approval was preserved without an attempt record. No POST was retried: reconcile the account before approving another reset.",
-              };
-            }
-            if (existing?.requestStatus === "approved" && existing.outcome === "unconfirmed") {
-              return {
-                ...cardResult(existing),
-                ...metadata,
-                note: "The earlier redemption is uncertain. No POST was retried: provider key retention is undocumented. Check the account before approving any new reset.",
-              };
-            }
-            let resetAccountIdentity = existing?.resetAccountIdentity;
-            const windows = inventory.resetCreditWindows;
-            const windowId = existing?.resetWindowId ?? resolveWindow(input.resetWindowId, windows);
-
-            // A new card asks; a pending replay rejoins its wait. The
-            // availability gates run only for a new card: an existing card
-            // already passed them when it was asked, and an approval, once
-            // given, has already spent the user's decision.
-            if (existing === null || existing.requestStatus === "pending") {
-              const instance = yield* providerInstances.getInstance(providerInstanceId);
-              if (existing === null && (instance === undefined || !instance.enabled)) {
-                return {
-                  status: "unsupported",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  ...(windowId === "five_hour" || windowId === "weekly"
-                    ? { resetWindowId: windowId }
-                    : {}),
-                  note:
-                    instance === undefined
-                      ? "The calling thread's provider instance could not be found."
-                      : "This provider instance is disabled, so nothing can be redeemed on it.",
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-              if (instance?.consumeResetCredit === undefined) {
-                return {
-                  status: "unsupported",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  note: "This provider does not bank reset credits.",
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-              if (instance.driverKind !== "zcode") {
-                return {
-                  status: "unsupported",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  note: `Agent-requested resets currently support the ZCode driver only, not ${instance.driverKind}.`,
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-              if (inventory.resetCreditWindowsUnavailable !== undefined || windows === undefined) {
-                return {
-                  status:
-                    inventory.resetCreditWindowsUnavailable?.reason === "probeFailed"
-                      ? "error"
-                      : "unavailable",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  note: scheduleNote ?? "Banked reset inventory is unavailable; nothing was asked.",
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-              if (windowId === "none" || windowId === "ambiguous") {
-                return {
-                  status: windowId === "none" ? "no_credit_available" : "window_ambiguous",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  ...(windows === undefined ? {} : { resetCreditWindows: [...windows] }),
-                  note:
-                    windowId === "none"
-                      ? "The account banks no usable reset credit for either window, so nothing was asked."
-                      : "Pass resetWindowId to choose the window whose reset credit to redeem.",
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-
-              const accountIdentity =
-                instance.resetCreditAccountIdentity === undefined
-                  ? undefined
-                  : yield* instance.resetCreditAccountIdentity.pipe(
-                      Effect.orElseSucceed(() => undefined),
-                    );
-              if (
-                accountIdentity === undefined ||
-                (existing !== null && resetAccountIdentity !== accountIdentity)
-              ) {
-                if (existing !== null)
-                  yield* record({
-                    threadId,
-                    askingRun: run,
-                    turnItemId: identity.turnItemId,
-                    label: existing.label,
-                    reason: existing.reason,
-                    providerInstanceId,
-                    resetWindowId: existing.resetWindowId,
-                    requestStatus: "cancelled",
-                  }).pipe(Effect.orElseSucceed(() => undefined));
-                return {
-                  status: "unavailable",
-                  verifiedRecovery: false,
-                  ...metadata,
-                  note: "The reset account is unavailable or changed since this request. Nothing was redeemed; request a new approval for the current account.",
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-              resetAccountIdentity = accountIdentity;
-              const windowLabel = WINDOW_LABELS[windowId as "five_hour" | "weekly"];
-              const label = `Redeem a ${windowLabel} quota reset`;
-              const reason =
-                `An agent in this thread asked to spend one ${instance.displayName} reset credit ` +
-                `on the ${windowLabel} quota window (instance ${providerInstanceId}). ` +
-                "Redeeming clears that window now; each further reset needs its own approval.";
-              if (existing === null)
                 yield* record({
                   threadId,
                   askingRun: run,
                   turnItemId: identity.turnItemId,
-                  label,
-                  reason,
+                  label: existing.label,
+                  reason: existing.reason,
                   providerInstanceId,
-                  resetWindowId: windowId,
-                  resetAccountIdentity,
-                  requestStatus: "pending",
-                }).pipe(
-                  Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
-                );
-
-              const closeCard = record({
+                  resetWindowId: existing.resetWindowId,
+                  requestStatus: "cancelled",
+                }).pipe(Effect.orElseSucceed(() => undefined));
+              return {
+                status: "unavailable",
+                verifiedRecovery: false,
+                ...metadata,
+                note: "The reset account is unavailable or changed since this request. Nothing was redeemed; request a new approval for the current account.",
+              } satisfies ProviderQuotaResetRequestResult;
+            }
+            resetAccountIdentity = accountIdentity;
+            const windowLabel = WINDOW_LABELS[windowId as "five_hour" | "weekly"];
+            const label = `Redeem a ${windowLabel} quota reset`;
+            const reason =
+              `An agent in this thread asked to spend one ${instance.displayName} reset credit ` +
+              `on the ${windowLabel} quota window (instance ${providerInstanceId}). ` +
+              "Redeeming clears that window now; each further reset needs its own approval.";
+            if (existing === null)
+              yield* record({
                 threadId,
                 askingRun: run,
                 turnItemId: identity.turnItemId,
@@ -692,126 +679,91 @@ const make = Effect.gen(function* () {
                 reason,
                 providerInstanceId,
                 resetWindowId: windowId,
-                requestStatus: "cancelled",
+                resetAccountIdentity,
+                requestStatus: "pending",
               }).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("Could not close a reset credit request card", {
-                    error: error.message,
-                  }),
-                ),
+                Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })),
               );
 
-              const answered = yield* waitAnswered({
-                threadId,
-                askingRun: run,
-                turnItemId: identity.turnItemId,
-              }).pipe(
-                Effect.timeoutOption(
-                  Duration.millis(
-                    Math.min(input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+            const closeCard = record({
+              threadId,
+              askingRun: run,
+              turnItemId: identity.turnItemId,
+              label,
+              reason,
+              providerInstanceId,
+              resetWindowId: windowId,
+              requestStatus: "cancelled",
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Could not close a reset credit request card", {
+                  error: error.message,
+                }),
+              ),
+            );
+
+            const answered = yield* waitAnswered({
+              threadId,
+              askingRun: run,
+              turnItemId: identity.turnItemId,
+            }).pipe(
+              Effect.timeoutOption(
+                Duration.millis(
+                  Math.min(input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+                ),
+              ),
+              Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)),
+            );
+            if (Option.isNone(answered)) yield* closeCard;
+            // An answer that raced the timeout still wins: the card is
+            // answered once. Only the user's two answers count here — a
+            // cancellation this call just recorded is the timeout itself.
+            const status = Option.isSome(answered)
+              ? answered.value
+              : yield* loadCard(threadId, identity.turnItemId).pipe(
+                  Effect.map((card) =>
+                    card !== null &&
+                    (card.requestStatus === "approved" || card.requestStatus === "declined")
+                      ? card.requestStatus
+                      : ("timed_out" as const),
                   ),
-                ),
-                Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)),
-              );
-              if (Option.isNone(answered)) yield* closeCard;
-              // An answer that raced the timeout still wins: the card is
-              // answered once. Only the user's two answers count here — a
-              // cancellation this call just recorded is the timeout itself.
-              const status = Option.isSome(answered)
-                ? answered.value
-                : yield* loadCard(threadId, identity.turnItemId).pipe(
-                    Effect.map((card) =>
-                      card !== null &&
-                      (card.requestStatus === "approved" || card.requestStatus === "declined")
-                        ? card.requestStatus
-                        : ("timed_out" as const),
-                    ),
-                    Effect.catch(() => Effect.succeed("timed_out" as const)),
-                  );
-              if (status !== "approved") {
-                // A dead ask closes its card: the run that asked has ended, so
-                // no answer can reach it and a pending card must not linger.
-                if (status === "cancelled") yield* closeCard;
-                return {
-                  status:
-                    status === "declined"
-                      ? ("declined" as const)
-                      : status === "cancelled"
-                        ? ("approval_cancelled" as const)
-                        : ("approval_timed_out" as const),
-                  verifiedRecovery: false as const,
-                  ...metadata,
-                  resetWindowId: windowId,
-                  ...(windows === undefined ? {} : { resetCreditWindows: [...windows] }),
-                  ...(status === "timed_out"
-                    ? {
-                        note: `The user did not answer in time and the card is closed. ${ASKING_AGAIN_NOTE}`,
-                      }
-                    : {}),
-                } satisfies ProviderQuotaResetRequestResult;
-              }
-            }
-
-            // Revalidate after waiting for the human: provider changes and terminal
-            // runs cannot transfer an approval to another route or a later run.
-            const latest = yield* threadManagement
-              .getThreadRecords(threadId, ["runs"])
-              .pipe(Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })));
-            const active = ThreadManagementService.latestActiveRun(latest);
-            if (
-              latest.thread.providerInstanceId !== providerInstanceId ||
-              active?.id !== run.id ||
-              resetAccountIdentity === undefined
-            ) {
-              yield* record({
-                threadId,
-                askingRun: run,
-                turnItemId: identity.turnItemId,
-                label: existing?.label ?? "Redeem a quota reset",
-                reason: existing?.reason ?? "User-approved quota reset",
-                providerInstanceId,
-                resetWindowId: windowId as "five_hour" | "weekly",
-                requestStatus: "approved",
-                outcome: "failed",
-                warning: "The provider or active run changed. No reset was attempted.",
-              }).pipe(Effect.orElseSucceed(() => undefined));
+                  Effect.catch(() => Effect.succeed("timed_out" as const)),
+                );
+            if (status !== "approved") {
+              // A dead ask closes its card: the run that asked has ended, so
+              // no answer can reach it and a pending card must not linger.
+              if (status === "cancelled") yield* closeCard;
               return {
-                status: "unavailable",
-                verifiedRecovery: false,
-                note: "The thread provider or active run changed while awaiting approval. Nothing was redeemed.",
-              } satisfies ProviderQuotaResetRequestResult;
-            }
-            const instance = yield* providerInstances.getInstance(providerInstanceId);
-            if (
-              instance?.consumeResetCredit === undefined ||
-              !instance.enabled ||
-              instance.driverKind !== "zcode"
-            ) {
-              yield* record({
-                threadId,
-                askingRun: run,
-                turnItemId: identity.turnItemId,
-                label: existing?.label ?? "Redeem a quota reset",
-                reason: existing?.reason ?? "User-approved quota reset",
-                providerInstanceId,
-                resetWindowId: windowId as "five_hour" | "weekly",
-                requestStatus: "approved",
-                outcome: "failed",
-                warning: "The provider instance is unavailable. No reset was attempted.",
-              }).pipe(Effect.orElseSucceed(() => undefined));
-              return {
-                status: existing?.outcome === "unconfirmed" ? "unconfirmed" : "failed",
-                verifiedRecovery: false,
-                resetWindowId: windowId as "five_hour" | "weekly",
+                status:
+                  status === "declined"
+                    ? ("declined" as const)
+                    : status === "cancelled"
+                      ? ("approval_cancelled" as const)
+                      : ("approval_timed_out" as const),
+                verifiedRecovery: false as const,
                 ...metadata,
-                note:
-                  existing?.outcome === "unconfirmed"
-                    ? "The earlier redemption remains uncertain. This provider instance is unavailable; no retry was attempted."
-                    : "The approved reset was not attempted because the provider instance is unavailable.",
+                resetWindowId: windowId,
+                ...(windows === undefined ? {} : { resetCreditWindows: [...windows] }),
+                ...(status === "timed_out"
+                  ? {
+                      note: `The user did not answer in time and the card is closed. ${ASKING_AGAIN_NOTE}`,
+                    }
+                  : {}),
               } satisfies ProviderQuotaResetRequestResult;
             }
-            // Persist uncertainty before crossing the provider boundary. If the
-            // process exits after the POST, restart cannot treat it as unattempted.
+          }
+
+          // Revalidate after waiting for the human: provider changes and terminal
+          // runs cannot transfer an approval to another route or a later run.
+          const latest = yield* threadManagement
+            .getThreadRecords(threadId, ["runs"])
+            .pipe(Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })));
+          const active = ThreadManagementService.latestActiveRun(latest);
+          if (
+            latest.thread.providerInstanceId !== providerInstanceId ||
+            active?.id !== run.id ||
+            resetAccountIdentity === undefined
+          ) {
             yield* record({
               threadId,
               askingRun: run,
@@ -821,79 +773,126 @@ const make = Effect.gen(function* () {
               providerInstanceId,
               resetWindowId: windowId as "five_hour" | "weekly",
               requestStatus: "approved",
-              outcome: "unconfirmed",
-            }).pipe(Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })));
-            const redemption = yield* instance
-              .consumeResetCredit(windowId as "five_hour" | "weekly", {
-                idempotencyKey: identity.idempotencyKey,
-                expectedAccountIdentity: resetAccountIdentity,
-              })
-              .pipe(
-                Effect.map((outcome) => ({ outcome }) as const),
-                Effect.catch((cause) =>
-                  Effect.succeed({
-                    outcome:
-                      cause.redemption === "refused"
-                        ? ("failed" as const)
-                        : ("unconfirmed" as const),
-                  }),
-                ),
-              );
-            // Recording the outcome can fail when the asking run was cut after
-            // the approval; the redemption itself already ran, so the record
-            // failure is tolerated and the card stays approved.
+              outcome: "failed",
+              warning: "The provider or active run changed. No reset was attempted.",
+            }).pipe(Effect.orElseSucceed(() => undefined));
+            return {
+              status: "unavailable",
+              verifiedRecovery: false,
+              note: "The thread provider or active run changed while awaiting approval. Nothing was redeemed.",
+            } satisfies ProviderQuotaResetRequestResult;
+          }
+          const instance = yield* providerInstances.getInstance(providerInstanceId);
+          if (
+            instance?.consumeResetCredit === undefined ||
+            !instance.enabled ||
+            instance.driverKind !== "zcode"
+          ) {
             yield* record({
               threadId,
               askingRun: run,
               turnItemId: identity.turnItemId,
-              label: `Redeem a ${WINDOW_LABELS[windowId as "five_hour" | "weekly"]} quota reset`,
-              reason: `An agent in this thread asked to spend one reset credit on the ${
-                WINDOW_LABELS[windowId as "five_hour" | "weekly"]
-              } quota window (instance ${providerInstanceId}).`,
+              label: existing?.label ?? "Redeem a quota reset",
+              reason: existing?.reason ?? "User-approved quota reset",
               providerInstanceId,
               resetWindowId: windowId as "five_hour" | "weekly",
               requestStatus: "approved",
-              outcome: redemption.outcome,
+              outcome: "failed",
+              warning: "The provider instance is unavailable. No reset was attempted.",
             }).pipe(Effect.orElseSucceed(() => undefined));
-
-            if (redemption.outcome !== "reset") {
-              return {
-                status: redemption.outcome === "unconfirmed" ? "unconfirmed" : "failed",
-                verifiedRecovery: false,
-                resetWindowId: windowId as "five_hour" | "weekly",
-                ...metadata,
-                ...(redemption.outcome === "failed" || redemption.outcome === "unconfirmed"
-                  ? {}
-                  : { outcome: redemption.outcome }),
-                note:
-                  redemption.outcome === "unconfirmed"
-                    ? "The provider may have redeemed the credit. Provider key retention is undocumented, so this request will not POST again. Check the account before requesting another approval."
-                    : `The provider reported ${redemption.outcome}. ${scheduleNote ?? ""}`,
-              } satisfies ProviderQuotaResetRequestResult;
-            }
-
-            // Refreshed percentages are display state; only a later successful
-            // turn on the model verifies recovery, so this tool never claims it.
-            const quotaAfter = yield* providerRegistry.refreshInstance(providerInstanceId).pipe(
-              Effect.map(
-                (providers) =>
-                  providers.find((candidate) => candidate.instanceId === providerInstanceId)
-                    ?.usageLimits?.windows,
-              ),
-              Effect.orElseSucceed(() => undefined),
-            );
             return {
-              status: "accepted",
+              status: existing?.outcome === "unconfirmed" ? "unconfirmed" : "failed",
               verifiedRecovery: false,
               resetWindowId: windowId as "five_hour" | "weekly",
-              outcome: "reset",
               ...metadata,
-              ...(quotaAfter === undefined ? {} : { quotaAfter: [...quotaAfter] }),
-              note: "The provider accepted the reset. This is not verified recovery: run a turn to confirm the model works.",
+              note:
+                existing?.outcome === "unconfirmed"
+                  ? "The earlier redemption remains uncertain. This provider instance is unavailable; no retry was attempted."
+                  : "The approved reset was not attempted because the provider instance is unavailable.",
             } satisfies ProviderQuotaResetRequestResult;
-          }),
-        );
-      }).pipe(Effect.withSpan("ResetCreditRequests.request")),
+          }
+          // Persist uncertainty before crossing the provider boundary. If the
+          // process exits after the POST, restart cannot treat it as unattempted.
+          yield* record({
+            threadId,
+            askingRun: run,
+            turnItemId: identity.turnItemId,
+            label: existing?.label ?? "Redeem a quota reset",
+            reason: existing?.reason ?? "User-approved quota reset",
+            providerInstanceId,
+            resetWindowId: windowId as "five_hour" | "weekly",
+            requestStatus: "approved",
+            outcome: "unconfirmed",
+          }).pipe(Effect.mapError(() => new ResetCreditRequestThreadInactiveError({ threadId })));
+          const redemption = yield* instance
+            .consumeResetCredit(windowId as "five_hour" | "weekly", {
+              idempotencyKey: identity.idempotencyKey,
+              expectedAccountIdentity: resetAccountIdentity,
+            })
+            .pipe(
+              Effect.map((outcome) => ({ outcome }) as const),
+              Effect.catch((cause) =>
+                Effect.succeed({
+                  outcome:
+                    cause.redemption === "refused" ? ("failed" as const) : ("unconfirmed" as const),
+                }),
+              ),
+            );
+          // Recording the outcome can fail when the asking run was cut after
+          // the approval; the redemption itself already ran, so the record
+          // failure is tolerated and the card stays approved.
+          yield* record({
+            threadId,
+            askingRun: run,
+            turnItemId: identity.turnItemId,
+            label: `Redeem a ${WINDOW_LABELS[windowId as "five_hour" | "weekly"]} quota reset`,
+            reason: `An agent in this thread asked to spend one reset credit on the ${
+              WINDOW_LABELS[windowId as "five_hour" | "weekly"]
+            } quota window (instance ${providerInstanceId}).`,
+            providerInstanceId,
+            resetWindowId: windowId as "five_hour" | "weekly",
+            requestStatus: "approved",
+            outcome: redemption.outcome,
+          }).pipe(Effect.orElseSucceed(() => undefined));
+
+          if (redemption.outcome !== "reset") {
+            return {
+              status: redemption.outcome === "unconfirmed" ? "unconfirmed" : "failed",
+              verifiedRecovery: false,
+              resetWindowId: windowId as "five_hour" | "weekly",
+              ...metadata,
+              ...(redemption.outcome === "failed" || redemption.outcome === "unconfirmed"
+                ? {}
+                : { outcome: redemption.outcome }),
+              note:
+                redemption.outcome === "unconfirmed"
+                  ? "The provider may have redeemed the credit. Provider key retention is undocumented, so this request will not POST again. Check the account before requesting another approval."
+                  : `The provider reported ${redemption.outcome}. ${scheduleNote ?? ""}`,
+            } satisfies ProviderQuotaResetRequestResult;
+          }
+
+          // Refreshed percentages are display state; only a later successful
+          // turn on the model verifies recovery, so this tool never claims it.
+          const quotaAfter = yield* providerRegistry.refreshInstance(providerInstanceId).pipe(
+            Effect.map(
+              (providers) =>
+                providers.find((candidate) => candidate.instanceId === providerInstanceId)
+                  ?.usageLimits?.windows,
+            ),
+            Effect.orElseSucceed(() => undefined),
+          );
+          return {
+            status: "accepted",
+            verifiedRecovery: false,
+            resetWindowId: windowId as "five_hour" | "weekly",
+            outcome: "reset",
+            ...metadata,
+            ...(quotaAfter === undefined ? {} : { quotaAfter: [...quotaAfter] }),
+            note: "The provider accepted the reset. This is not verified recovery: run a turn to confirm the model works.",
+          } satisfies ProviderQuotaResetRequestResult;
+        }),
+      );
+    }),
   });
 });
 
