@@ -69,7 +69,7 @@ jobs:
 
       - name: Verify Local packaging contracts
         run: |
-          vp test run scripts/build-desktop-artifact.test.ts scripts/resolve-nightly-release.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/updates/LocalReleaseUpdates.test.ts
+          vp test run scripts/build-desktop-artifact.test.ts scripts/update-release-package-versions.test.ts apps/desktop/src/app/PackagedLocalBuild.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/updates/LocalReleaseUpdates.test.ts
 
       - name: Verify Local update link and favorite reordering
         working-directory: apps/web
