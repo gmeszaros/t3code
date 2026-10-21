@@ -36,7 +36,18 @@ jobs:
           cache: false
           run-install: false
 
+      - name: Create repository-scoped synchronization token
+        id: sync-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.UPSTREAM_SYNC_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
       - name: Synchronize main without rewriting history
+        env:
+          GH_TOKEN: ${{ steps.sync-token.outputs.token }}
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/pingdotgg/t3code.git
@@ -49,9 +60,12 @@ jobs:
 
       - name: Prepare one bounded integration
         id: candidate
+        env:
+          GH_TOKEN: ${{ steps.sync-token.outputs.token }}
+          PR_READ_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          pending="$(gh pr list --base local --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("updates/upstream-"))] | length')"
+          pending="$(GH_TOKEN="$PR_READ_TOKEN" gh pr list --base local --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("updates/upstream-"))] | length')"
           if [[ "$pending" != 0 ]]; then
             echo 'An upstream integration PR is already open; retaining its exact revision.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -73,7 +87,7 @@ jobs:
           fi
           expected_tree="$(git rev-parse 'HEAD^{tree}')"
           # Create the ref at existing Local history, then merge through GitHub.
-          # Git pushes containing upstream workflow changes reject GITHUB_TOKEN.
+          # Workflow changes require the App's Workflows permission, including via API.
           if ! git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
             gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$LOCAL_SHA"
           fi

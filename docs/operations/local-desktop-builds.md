@@ -28,6 +28,14 @@ tree against the prepared local merge. It opens one draft integration PR against
 GitHub token. No PAT is required. Enable Actions to create pull requests in the
 repository's Actions settings before enabling this workflow.
 
+Synchronization uses a private GitHub App installed only on this repository,
+with Contents and Workflows write permissions. Set the repository variable
+`UPSTREAM_SYNC_APP_ID` and Actions secret `UPSTREAM_SYNC_APP_PRIVATE_KEY`.
+The workflow generates a token scoped to the current repository and revokes it
+after the job. Only source synchronization uses that token; PR creation and CI
+dispatch retain `GITHUB_TOKEN`. The built-in token cannot update workflow files,
+including through GitHub's fork-sync and merge APIs.
+
 Only one `updates/upstream-*` PR may be open. Later runs keep that revision
 stable until it is reviewed and merged or closed. Conflicts stop the batch and
 require manual resolution; Local changes are never discarded. A failed PR
@@ -124,7 +132,11 @@ upstream credentials or Blacksmith runners. Review this allowlist after upstream
 synchronization; leave `main` unchanged. The Local workflows use standard GitHub
 runner labels.
 
-No scheduled credential or `UPSTREAM_SYNC_TOKEN` is required for this fork. The update workflow uses GitHub's short-lived token to synchronize `main` and preserve Local history through a verified merge.
+The scheduled integration needs the App credentials described above, not a
+personal `UPSTREAM_SYNC_TOKEN`. The older manual `Local upstream update` path
+still uses `GITHUB_TOKEN` and can fail when the selected upstream revision
+changes workflow files; use the integration PR path followed by `Local desktop
+build` for regular updates.
 
 The downloaded Actions artifact contains an app ZIP. Extract that ZIP, keep
 the previous app for rollback, and install `T3 Code (Local).app`. The manifest
