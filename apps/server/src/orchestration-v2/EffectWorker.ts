@@ -407,6 +407,9 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.optionId === undefined
                   ? {}
                   : { optionId: effect.request.optionId }),
+                ...(effect.request.feedback === undefined
+                  ? {}
+                  : { feedback: effect.request.feedback }),
                 ...(effect.request.answers === undefined
                   ? {}
                   : { answers: effect.request.answers }),
