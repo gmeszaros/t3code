@@ -157,7 +157,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
               : isContextDisabled
                 ? (props.getDisabledInstanceTooltip?.(entry) ?? instanceLabel)
                 : showNewBadge
-                  ? `${instanceLabel} — New`
+                  ? `${instanceLabel} (New)`
                   : instanceLabel;
 
             const button = (
