@@ -16,7 +16,7 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import type { makeThreadErrorSetter } from "../ChatView.logic";
-import { buildManualContinuationTurnInput } from "./chatViewSend";
+import { buildManualContinuationTurnInput } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
 import type { useTimelineFollow } from "./useTimelineFollow";
 import type { useUsageLimitsPanel } from "./useUsageLimitsPanel";
