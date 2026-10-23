@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
-import { make, newerLocalRelease } from "./LocalReleaseUpdates.ts";
+import { make, newerLocalRelease, LocalUpdatePreparationError } from "./LocalReleaseUpdates.ts";
 import { createInitialDesktopUpdateState } from "./updateMachine.ts";
 
 const release = (version: string) => ({
@@ -31,7 +33,7 @@ const initial = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Local manual release checks", () => {
+describe("Local release preparation", () => {
   it("orders date-and-time builds after legacy builds and across midnight", () => {
     expect(newerLocalRelease(release("0.0.46-local.20261014.172500"), initial.currentVersion)).toBe(
       "0.0.46-local.20261014.172500",
@@ -67,29 +69,153 @@ describe("Local manual release checks", () => {
     ).toBeNull();
   });
 
+  it.effect("advertises releases but refuses download when staging is unsupported", () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1"))));
+    vi.stubGlobal("fetch", fetch);
+    return Effect.gen(function* () {
+      const updates = yield* make(initial, () => Effect.void);
+      const result = yield* updates.check("manual");
+      expect(result.checked).toBe(true);
+      expect(String(fetch.mock.calls[0]?.[0])).toBe(
+        "https://api.github.com/repos/gmeszaros/t3code/releases/latest",
+      );
+      expect(result.state.status).toBe("available");
+      expect(result.state.availableVersion).toBe("0.0.46-local.4.1");
+      expect(result.state.downloadedVersion).toBeNull();
+      expect((yield* updates.download).accepted).toBe(false);
+      expect((yield* updates.installPrepared("0.0.46-local.4.1")).failed).toBe(true);
+      expect(yield* updates.isInstallActive).toBe(false);
+      expect((yield* updates.setChannel("nightly")).channel).toBe("latest");
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
+  });
+
   it.effect(
-    "advertises a newer release through IPC state and refuses automated installation",
+    "stages a verified update without quitting and preserves it across release checks",
     () => {
-      const fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1"))));
-      vi.stubGlobal("fetch", fetch);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1")))),
+      );
       return Effect.gen(function* () {
-        const updates = yield* make(initial, () => Effect.void);
-        const result = yield* updates.check("manual");
-        expect(result.checked).toBe(true);
-        expect(String(fetch.mock.calls[0]?.[0])).toBe(
-          "https://api.github.com/repos/gmeszaros/t3code/releases/latest",
-        );
-        expect(result.state.status).toBe("available");
-        expect(result.state.availableVersion).toBe("0.0.46-local.4.1");
-        expect(result.state.downloadedVersion).toBeNull();
+        const staged: string[] = [];
+        const updates = yield* make(initial, () => Effect.void, {
+          pendingVersion: null,
+          stage: (version) =>
+            Effect.sync(() => {
+              staged.push(version);
+            }),
+        });
+        yield* updates.check("manual");
+        expect((yield* updates.download).completed).toBe(true);
+        expect(staged).toEqual(["0.0.46-local.4.1"]);
+        expect((yield* updates.getState).status).toBe("downloaded");
+        expect((yield* updates.check("poll")).state.downloadedVersion).toBe("0.0.46-local.4.1");
         expect((yield* updates.download).accepted).toBe(false);
-        expect((yield* updates.installPrepared("0.0.46-local.4.1")).failed).toBe(true);
-        expect(yield* updates.isInstallActive).toBe(false);
-        expect((yield* updates.setChannel("nightly")).channel).toBe("latest");
+        expect((yield* updates.install).accepted).toBe(false);
+        expect(yield* updates.isActionActive).toBe(false);
       }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
     },
+  );
+
+  it.effect(
+    "restores a prepared update after startup and allows retry after preparation failure",
+    () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1")))),
+      );
+      return Effect.gen(function* () {
+        let attempts = 0;
+        const updates = yield* make(initial, () => Effect.void, {
+          pendingVersion: null,
+          stage: () =>
+            Effect.suspend(() =>
+              ++attempts === 1
+                ? Effect.fail(new LocalUpdatePreparationError({ cause: "checksum mismatch" }))
+                : Effect.void,
+            ),
+        });
+        yield* updates.check("manual");
+        expect((yield* updates.download).state.errorContext).toBe("download");
+        expect(yield* updates.isActionActive).toBe(false);
+        expect((yield* updates.download).completed).toBe(true);
+        const restored = yield* make(initial, () => Effect.void, {
+          pendingVersion: "0.0.46-local.4.1",
+          stage: () => Effect.die("must not download again"),
+        });
+        expect((yield* restored.getState).status).toBe("downloaded");
+        expect((yield* restored.download).accepted).toBe(false);
+      }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
+    },
+  );
+
+  it.effect("rejects overlapping downloads and checks while preparation owns the action", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1")))),
+    );
+    return Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const updates = yield* make(initial, () => Effect.void, {
+        pendingVersion: null,
+        stage: () =>
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+      });
+      yield* updates.check("manual");
+      const download = yield* Effect.forkChild(updates.download);
+      yield* Deferred.await(started);
+      expect((yield* updates.download).accepted).toBe(false);
+      expect((yield* updates.check("poll")).checked).toBe(false);
+      expect((yield* updates.getState).status).toBe("downloading");
+      yield* Deferred.succeed(finish, undefined);
+      expect((yield* Fiber.join(download)).completed).toBe(true);
+      expect(yield* updates.isActionActive).toBe(false);
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
+  });
+
+  it.effect("releases download ownership after cancellation and allows retry", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(release("0.0.46-local.4.1")))),
+    );
+    return Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      let attempts = 0;
+      const updates = yield* make(initial, () => Effect.void, {
+        pendingVersion: null,
+        stage: () =>
+          Effect.suspend(() =>
+            ++attempts === 1
+              ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.void,
+          ),
+      });
+      yield* updates.check("manual");
+      const download = yield* Effect.forkChild(updates.download);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(download);
+      expect(yield* updates.isActionActive).toBe(false);
+      expect((yield* updates.getState).status).toBe("error");
+      expect((yield* updates.download).completed).toBe(true);
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
+  });
+
+  it.effect("reports a startup installation failure while retaining the prepared update", () =>
+    Effect.gen(function* () {
+      const updates = yield* make(initial, () => Effect.void, {
+        pendingVersion: "0.0.46-local.4.1",
+        pendingError: "App directory is not writable",
+        stage: () => Effect.void,
+      });
+      const state = yield* updates.getState;
+      expect(state.status).toBe("error");
+      expect(state.errorContext).toBe("install");
+      expect(state.downloadedVersion).toBe("0.0.46-local.4.1");
+      expect(state.message).toBe("App directory is not writable");
+    }),
   );
 
   it.effect("reports absent releases as up to date and allows retry after an API error", () => {

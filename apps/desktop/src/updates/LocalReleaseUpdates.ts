@@ -6,10 +6,16 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { DesktopUpdates } from "./DesktopUpdates.ts";
+
+export class LocalUpdatePreparationError extends Schema.TaggedError<LocalUpdatePreparationError>()(
+  "LocalUpdatePreparationError",
+  { cause: Schema.Defect() },
+) {}
 
 const RELEASE_API = "https://api.github.com/repos/gmeszaros/t3code/releases/latest";
 const LOCAL_VERSION = /^(\d+)\.(\d+)\.(\d+)-local\.(\d+)\.(\d+)$/;
@@ -36,14 +42,31 @@ export function newerLocalRelease(payload: unknown, currentVersion: string): str
   return names.has(`${stem}.zip`) && names.has(`${stem}.build.json`) ? version : null;
 }
 
-/** Local builds advertise downloads; they never stage or install an update. */
 export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
   initial: DesktopUpdateState,
   send: (state: DesktopUpdateState) => Effect.Effect<void>,
+  staging?: {
+    readonly pendingVersion: string | null;
+    readonly pendingError?: string | undefined;
+    readonly stage: (version: string) => Effect.Effect<void, LocalUpdatePreparationError>;
+  },
 ) {
   return yield* Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const state = yield* Ref.make(initial);
+    const state = yield* Ref.make<DesktopUpdateState>(
+      staging?.pendingVersion
+        ? {
+            ...initial,
+            status: staging.pendingError ? "error" : "downloaded",
+            downloadedVersion: staging.pendingVersion,
+            availableVersion: staging.pendingVersion,
+            message:
+              staging.pendingError ?? "Update prepared. Quit and reopen the app to install it.",
+            errorContext: staging.pendingError ? "install" : null,
+            canRetry: !!staging.pendingError,
+          }
+        : initial,
+    );
     const changes = yield* PubSub.sliding<DesktopUpdateState>(16);
     const mutex = yield* Semaphore.make(1);
     const busy = yield* Ref.make(false);
@@ -55,7 +78,8 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
         ),
       );
     const check = Effect.fn("LocalReleaseUpdates.check")(function* (_reason: string) {
-      if (!initial.enabled) return { checked: false, state: yield* Ref.get(state) };
+      if (!initial.enabled || (yield* Ref.get(state)).downloadedVersion)
+        return { checked: false, state: yield* Ref.get(state) };
       const reserved = yield* Ref.getAndSet(busy, true);
       if (reserved) return { checked: false, state: yield* Ref.get(state) };
       return yield* Effect.gen(function* () {
@@ -93,6 +117,53 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
         return { checked: result.message === null, state: next };
       }).pipe(Effect.ensuring(Ref.set(busy, false)));
     });
+    const download = Effect.gen(function* () {
+      const previous = yield* Ref.get(state);
+      if (
+        !initial.enabled ||
+        !staging ||
+        !previous.availableVersion ||
+        previous.downloadedVersion ||
+        (yield* Ref.getAndSet(busy, true))
+      ) {
+        return { accepted: false, completed: false, state: previous };
+      }
+      return yield* Effect.gen(function* () {
+        yield* publish({
+          ...previous,
+          status: "downloading",
+          message: null,
+          errorContext: null,
+          canRetry: false,
+        });
+        const result = yield* staging.stage(previous.availableVersion!).pipe(Effect.exit);
+        const success = result._tag === "Success";
+        const next: DesktopUpdateState = {
+          ...previous,
+          status: success ? "downloaded" : "error",
+          downloadedVersion: success ? previous.availableVersion : null,
+          downloadPercent: success ? 100 : null,
+          message: success
+            ? "Update prepared. Quit and reopen the app to install it."
+            : "Could not prepare Local update. Try again.",
+          errorContext: success ? null : "download",
+          canRetry: !success,
+        };
+        yield* publish(next);
+        return { accepted: true, completed: success, state: next };
+      }).pipe(
+        Effect.onInterrupt(() =>
+          publish({
+            ...previous,
+            status: "error",
+            message: "Local update preparation was cancelled. Click to retry.",
+            errorContext: "download",
+            canRetry: true,
+          }),
+        ),
+        Effect.ensuring(Ref.set(busy, false)),
+      );
+    });
     const refuseInstall = Ref.get(state).pipe(
       Effect.map((state) => ({
         accepted: false,
@@ -127,7 +198,7 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
       }),
       setChannel: (_channel: DesktopUpdateChannel) => Ref.get(state),
       check,
-      download: refuseInstall,
+      download,
       install: refuseInstall,
       installPrepared: (_version: string) =>
         refuseInstall.pipe(Effect.map((result) => ({ ...result, failed: true }))),

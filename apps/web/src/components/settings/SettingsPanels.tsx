@@ -291,9 +291,8 @@ function AboutVersionSection() {
   const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
   const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
   const buttonDisabled =
-    action === "none"
-      ? !canCheckForUpdate(updateState)
-      : isDesktopUpdateButtonDisabled(updateState);
+    isDesktopUpdateButtonDisabled(updateState) ||
+    (action === "none" ? !canCheckForUpdate(updateState) : false);
 
   const actionLabel: Record<string, string> = {
     download: "Download",
@@ -305,10 +304,14 @@ function AboutVersionSection() {
     downloading: "Downloading…",
     "up-to-date": "Up to Date",
   };
-  const buttonLabel =
-    actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    action === "release"
+  const preparedLocal =
+    !!updateState?.downloadedVersion && isLocalDesktopVersion(updateState.currentVersion);
+  const buttonLabel = preparedLocal
+    ? "Prepared"
+    : (actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates");
+  const description = preparedLocal
+    ? "Update prepared. Quit and reopen the app when convenient to install it."
+    : action === "release"
       ? "Download the Local release and replace the app after closing it."
       : action === "download" || action === "install"
         ? "Update available."
