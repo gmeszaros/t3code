@@ -55,6 +55,7 @@ export interface RuntimeRequestServiceV2Shape {
     readonly requestId: RuntimeRequestId;
     readonly decision?: ProviderApprovalDecision;
     readonly optionId?: string;
+    readonly feedback?: string;
     readonly answers?: ProviderUserInputAnswers;
   }) => Effect.Effect<void, RuntimeRequestResponseExecutionError>;
 }
@@ -120,6 +121,7 @@ export const layer: Layer.Layer<
             requestId: input.requestId,
             ...(input.decision === undefined ? {} : { decision: input.decision }),
             ...(input.optionId === undefined ? {} : { optionId: input.optionId }),
+            ...(input.feedback === undefined ? {} : { feedback: input.feedback }),
             ...(input.answers === undefined ? {} : { answers: input.answers }),
           });
         },

@@ -51,6 +51,7 @@ describe("runMigrations", () => {
         [66, "CodexUsageNativeTurnIndex"],
         [67, "RepairClientSettlementTimestamps"],
         [68, "WebhookDedupe"],
+        [69, "ShellStopRequestIndex"],
       ]);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.deepStrictEqual(

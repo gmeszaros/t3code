@@ -54,6 +54,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async connectDesktopPage(endpoint: string) {
       const context = makeContext();
       desktopConnections.push({ endpoint, context });
+      desktopDetaches.emit("connected");
       return { browser: { close: async () => {} }, page: context.page as unknown as Page };
     }
     async close() {
@@ -222,6 +223,8 @@ let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
 const desktopDetaches = new NodeEvents.EventEmitter();
+let desktopDetachSubscribed = Promise.withResolvers<void>();
+let desktopAttachSubscribed = Promise.withResolvers<void>();
 const desktopTabs = new Set<string>();
 const desktopRenders = (tabId: string) => {
   if (desktopRendersNext) {
@@ -230,7 +233,6 @@ const desktopRenders = (tabId: string) => {
   }
   return desktopTabs.has(tabId);
 };
-const releasedDesktopTabs: Array<string> = [];
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
 const testThread = {
   threadId: ThreadId.make("browser-test-thread"),
@@ -269,6 +271,7 @@ const dependencies = Layer.mergeAll(
           const onDetach = (key: { threadId: string; tabId: string }) =>
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("detach", onDetach);
+          desktopDetachSubscribed.resolve();
           return onDetach;
         }),
         (onDetach) => Effect.sync(() => desktopDetaches.off("detach", onDetach)),
@@ -280,6 +283,7 @@ const dependencies = Layer.mergeAll(
           const onAttach = (key: { threadId: string; tabId: string }) =>
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("attach", onAttach);
+          desktopAttachSubscribed.resolve();
           return onAttach;
         }),
         (onAttach) => Effect.sync(() => desktopDetaches.off("attach", onAttach)),
@@ -288,7 +292,9 @@ const dependencies = Layer.mergeAll(
     isAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
-        Effect.sync(() => releasedDesktopTabs.push(key.tabId)),
+        Effect.sync(() => {
+          desktopDetaches.emit("released");
+        }),
       ),
     pointer: () => Effect.void,
   }),
@@ -329,8 +335,9 @@ beforeEach(() => {
   focusedFrame = null;
   desktopTabs.clear();
   desktopRendersNext = false;
-  releasedDesktopTabs.length = 0;
   desktopConnections.length = 0;
+  desktopDetachSubscribed = Promise.withResolvers<void>();
+  desktopAttachSubscribed = Promise.withResolvers<void>();
 });
 
 it.live("reports observed navigation history and omits it when CDP is unavailable", () =>
@@ -1197,15 +1204,20 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
     Effect.gen(function* () {
       const manager = yield* Manager.PreviewManager;
       yield* ServerBrowser.ServerBrowser;
-      yield* Effect.yieldNow;
+      yield* Effect.promise(() => desktopDetachSubscribed.promise);
+      yield* Effect.promise(() => desktopAttachSubscribed.promise);
       desktopRendersNext = true;
+      const connected = new Promise<void>((resolve) => desktopDetaches.once("connected", resolve));
       const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
-      while (desktopConnections.length === 0) yield* Effect.yieldNow;
-      while (desktopDetaches.listenerCount("detach") === 0) yield* Effect.yieldNow;
+      yield* Effect.promise(() => connected);
+      const released = new Promise<void>((resolve) => desktopDetaches.once("released", resolve));
       desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      while (releasedDesktopTabs.length === 0) yield* Effect.yieldNow;
+      yield* Effect.promise(() => released);
+      const reconnected = new Promise<void>((resolve) =>
+        desktopDetaches.once("connected", resolve),
+      );
       desktopDetaches.emit("attach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      while (desktopConnections.length < 2) yield* Effect.yieldNow;
+      yield* Effect.promise(() => reconnected);
       expect(desktopConnections).toHaveLength(2);
     }),
   ).pipe(Effect.provide(layer)),
