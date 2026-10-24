@@ -34,6 +34,7 @@ import {
 import { PullRequestFilesSheet } from "./features/pull-requests/PullRequestFiles";
 import { PullRequestReviewSheet } from "./features/pull-requests/PullRequestReviewSheet";
 import { PullRequestReviewersScreen } from "./features/pull-requests/PullRequestReviewersScreen";
+import { PullRequestFilterSearchScreen } from "./features/pull-requests/PullRequestFilterSearchScreen";
 import {
   RenderErrorBoundary,
   RenderFailureView,
@@ -147,6 +148,7 @@ const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Pl
 
 type AppScreenOptions = NativeStackNavigationOptions & {
   readonly unstable_navigationItemStyle?: "editor";
+  readonly unstable_headerMinimizationBehavior?: "onScrollUp" | "never";
 };
 
 const GLASS_HEADER_OPTIONS: AppScreenOptions = {
@@ -168,6 +170,17 @@ const DETAIL_HEADER_OPTIONS: AppScreenOptions = {
   ...GLASS_HEADER_OPTIONS,
   headerShown: Platform.OS !== "android",
 };
+
+// Like Messages on the Duo: reading back through history (scrolling up) minimizes the
+// header, and reversing toward the latest message restores it. Other devices ignore it.
+const THREAD_HEADER_OPTIONS: AppScreenOptions = {
+  ...DETAIL_HEADER_OPTIONS,
+  unstable_headerMinimizationBehavior: "onScrollUp",
+};
+
+// The Duo minimizes headers on scroll down by default. Home and the pull request lists
+// stutter against it on hardware (not reproducible in the simulator), so they keep theirs.
+const FIXED_DUO_HEADER: AppScreenOptions = { unstable_headerMinimizationBehavior: "never" };
 
 const SOLID_HEADER_OPTIONS: AppScreenOptions = {
   headerBackButtonDisplayMode: "minimal",
@@ -640,6 +653,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
       linking: "",
       options: {
         ...GLASS_HEADER_OPTIONS,
+        ...FIXED_DUO_HEADER,
         contentStyle: { backgroundColor: "transparent" },
         headerBackVisible: false,
         ...getCompactBrandHeaderOptions(),
@@ -651,7 +665,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
         path: "pull-requests/:environmentId/:projectId/:repository/:number",
         parse: { number: Number },
       },
-      options: DETAIL_HEADER_OPTIONS,
+      options: { ...DETAIL_HEADER_OPTIONS, ...FIXED_DUO_HEADER },
     }),
     PullRequestGuideStop: createNativeStackScreen({
       screen: PullRequestGuideStopScreen,
@@ -675,11 +689,27 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: PullRequestReviewersScreen,
       options: {
         ...DETAIL_HEADER_OPTIONS,
+        ...FIXED_DUO_HEADER,
         ...HORIZONTAL_FORM_SHEET_OPTIONS,
         sheetAllowedDetents: formSheetDetents(0.75),
         sheetGrabberVisible: true,
         headerBackVisible: false,
       },
+    }),
+    PullRequestFilterSearch: createNativeStackScreen({
+      screen: PullRequestFilterSearchScreen,
+      // Android pushes it like the branch picker; a formSheet there leaves the list's header
+      // peeking above it once the keyboard opens.
+      options:
+        Platform.OS === "android"
+          ? { presentation: "card", headerShown: false }
+          : {
+              ...DETAIL_HEADER_OPTIONS,
+              ...HORIZONTAL_FORM_SHEET_OPTIONS,
+              sheetAllowedDetents: formSheetDetents(0.75),
+              sheetGrabberVisible: true,
+              headerBackVisible: false,
+            },
     }),
     PullRequestDiscussion: createNativeStackScreen({
       screen: PullRequestDiscussionScreen,
@@ -707,7 +737,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,
       linking: { path: "threads/:environmentId?/:threadId?", alias: ["new/draft"] },
-      options: DETAIL_HEADER_OPTIONS,
+      options: THREAD_HEADER_OPTIONS,
     }),
     NewTaskProject: createNativeStackScreen({
       screen: NewTaskRouteScreen,
