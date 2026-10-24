@@ -47,6 +47,7 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
   send: (state: DesktopUpdateState) => Effect.Effect<void>,
   staging?: {
     readonly pendingVersion: string | null;
+    readonly restart?: Effect.Effect<void>;
     readonly pendingError?: string | undefined;
     readonly stage: (version: string) => Effect.Effect<void, LocalUpdatePreparationError>;
   },
@@ -60,8 +61,7 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
             status: staging.pendingError ? "error" : "downloaded",
             downloadedVersion: staging.pendingVersion,
             availableVersion: staging.pendingVersion,
-            message:
-              staging.pendingError ?? "Update prepared. Quit and reopen the app to install it.",
+            message: staging.pendingError ?? "Update prepared. Restart the app to install it.",
             errorContext: staging.pendingError ? "install" : null,
             canRetry: !!staging.pendingError,
           }
@@ -144,7 +144,7 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
           downloadedVersion: success ? previous.availableVersion : null,
           downloadPercent: success ? 100 : null,
           message: success
-            ? "Update prepared. Quit and reopen the app to install it."
+            ? "Update prepared. Restart the app to install it."
             : "Could not prepare Local update. Try again.",
           errorContext: success ? null : "download",
           canRetry: !success,
@@ -164,17 +164,31 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
         Effect.ensuring(Ref.set(busy, false)),
       );
     });
-    const refuseInstall = Ref.get(state).pipe(
-      Effect.map((state) => ({
-        accepted: false,
-        completed: false,
-        state,
-      })),
-    );
+    const installing = yield* Ref.make(false);
+    const installPrepared = Effect.fn("LocalReleaseUpdates.installPrepared")(function* (
+      expectedVersion?: string,
+    ) {
+      const current = yield* Ref.get(state);
+      if (
+        !initial.enabled ||
+        !staging?.restart ||
+        !current.downloadedVersion ||
+        (expectedVersion !== undefined && current.downloadedVersion !== expectedVersion) ||
+        !(
+          current.status === "downloaded" ||
+          (current.status === "error" && current.errorContext === "install")
+        ) ||
+        (yield* Ref.getAndSet(busy, true))
+      )
+        return { accepted: false, completed: false, failed: false, state: current };
+      yield* Ref.set(installing, true);
+      yield* staging.restart;
+      return { accepted: true, completed: false, failed: false, state: current };
+    });
     return {
       getState: Ref.get(state),
       isActionActive: Ref.get(busy),
-      isInstallActive: Effect.succeed(false),
+      isInstallActive: Ref.get(installing),
       subscribe: mutex.withPermits(1)(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
@@ -199,9 +213,8 @@ export const make = Effect.fn("LocalReleaseUpdates.make")(function* (
       setChannel: (_channel: DesktopUpdateChannel) => Ref.get(state),
       check,
       download,
-      install: refuseInstall,
-      installPrepared: (_version: string) =>
-        refuseInstall.pipe(Effect.map((result) => ({ ...result, failed: true }))),
+      install: installPrepared(),
+      installPrepared,
     } satisfies DesktopUpdates["Service"];
   }).pipe(Effect.provide(FetchHttpClient.layer));
 });
