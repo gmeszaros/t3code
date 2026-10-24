@@ -85,7 +85,7 @@ describe("Local release preparation", () => {
       expect(result.state.availableVersion).toBe("0.0.46-local.4.1");
       expect(result.state.downloadedVersion).toBeNull();
       expect((yield* updates.download).accepted).toBe(false);
-      expect((yield* updates.installPrepared("0.0.46-local.4.1")).failed).toBe(true);
+      expect((yield* updates.installPrepared("0.0.46-local.4.1")).accepted).toBe(false);
       expect(yield* updates.isInstallActive).toBe(false);
       expect((yield* updates.setChannel("nightly")).channel).toBe("latest");
     }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
@@ -117,6 +117,26 @@ describe("Local release preparation", () => {
         expect(yield* updates.isActionActive).toBe(false);
       }).pipe(Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch));
     },
+  );
+
+  it.effect("restarts only the prepared revision and refuses duplicate install requests", () =>
+    Effect.gen(function* () {
+      let restarts = 0;
+      const updates = yield* make(initial, () => Effect.void, {
+        pendingVersion: "0.0.46-local.4.1",
+        stage: () => Effect.die("must not download again"),
+        restart: Effect.sync(() => {
+          restarts++;
+        }),
+      });
+      expect((yield* updates.installPrepared("0.0.46-local.5.1")).accepted).toBe(false);
+      expect(restarts).toBe(0);
+      expect((yield* updates.install).accepted).toBe(true);
+      expect(restarts).toBe(1);
+      expect(yield* updates.isInstallActive).toBe(true);
+      expect((yield* updates.install).accepted).toBe(false);
+      expect(restarts).toBe(1);
+    }),
   );
 
   it.effect(

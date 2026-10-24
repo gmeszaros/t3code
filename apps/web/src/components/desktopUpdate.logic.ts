@@ -62,7 +62,12 @@ export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
   if (isLocalDesktopVersion(state.currentVersion)) {
-    if (state.downloadedVersion) return "none";
+    if (state.downloadedVersion) {
+      return state.status === "downloaded" ||
+        (state.status === "error" && state.errorContext === "install")
+        ? "install"
+        : "none";
+    }
     return (state.status === "available" ||
       (state.status === "error" && state.errorContext === "download")) &&
       state.availableVersion
@@ -93,12 +98,7 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return (
-    state?.status === "downloading" ||
-    (state !== null &&
-      isLocalDesktopVersion(state.currentVersion) &&
-      state.downloadedVersion !== null)
-  );
+  return state?.status === "downloading";
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -122,8 +122,8 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
   }
   if (isLocalDesktopVersion(state.currentVersion) && state.downloadedVersion) {
     if (state.errorContext === "install")
-      return `Local update could not be installed: ${state.message ?? "Installation failed"}. Quit and reopen to retry.`;
-    return `Local ${state.downloadedVersion} prepared. Quit and reopen the app to install it.`;
+      return `Local update could not be installed: ${state.message ?? "Installation failed"}. Click to restart and retry.`;
+    return `Local ${state.downloadedVersion} prepared. Click to restart and install.`;
   }
   if (
     state.notAppliedVersion !== undefined &&

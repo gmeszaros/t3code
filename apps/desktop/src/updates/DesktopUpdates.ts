@@ -29,6 +29,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
@@ -349,6 +350,7 @@ export const make = Effect.gen(function* () {
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   if (environment.isLocalBuild && environment.isPackaged && !environment.isDevelopment) {
+    const electronApp = yield* ElectronApp.ElectronApp;
     const pending = yield* Effect.try(() =>
       readPendingLocalUpdate(environment.baseDir, localAppPath(environment.resourcesPath)),
     ).pipe(Effect.orElseSucceed(() => null));
@@ -369,6 +371,13 @@ export const make = Effect.gen(function* () {
       environment.platform === "darwin" && environment.processArch === "arm64"
         ? {
             pendingVersion: pending?.version ?? null,
+            // Normal quit waits for desktop shutdown before the next launch applies the bundle.
+            restart: electronApp
+              .relaunch({
+                execPath: process.execPath,
+                args: process.argv.slice(1),
+              })
+              .pipe(Effect.andThen(electronApp.quit)),
             pendingError: pending?.error,
             stage: (version) =>
               Effect.tryPromise((signal) =>

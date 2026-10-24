@@ -30,7 +30,7 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
-  it("prepares Local updates in the background without offering a forced restart", () => {
+  it("prepares Local updates before offering restart", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       currentVersion: "0.0.46-local.3.1",
@@ -51,18 +51,18 @@ describe("desktop update button state", () => {
         status: "downloaded",
         downloadedVersion: state.availableVersion,
       }),
-    ).toBe("none");
+    ).toBe("install");
   });
-  it("keeps a prepared Local update visible without offering another download or a forced restart", () => {
+  it("offers restart for a prepared Local update", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       currentVersion: "0.1.2-local.1.1",
       downloadedVersion: "0.1.2-local.2.1",
       status: "downloaded",
     };
-    expect(resolveDesktopUpdateButtonAction(state)).toBe("none");
-    expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
-    expect(getDesktopUpdateButtonTooltip(state)).toContain("Quit and reopen");
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
+    expect(isDesktopUpdateButtonDisabled(state)).toBe(false);
+    expect(getDesktopUpdateButtonTooltip(state)).toContain("Click to restart and install");
     expect(canCheckForUpdate(state)).toBe(false);
   });
 
